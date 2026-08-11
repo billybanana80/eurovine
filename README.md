@@ -1,4 +1,4 @@
-# Eurovine
+<h1 align="center">Eurovine</h1>
 
 <p align="center">
   <strong>A script organiser/originator for European free-to-air streaming services.</strong>
