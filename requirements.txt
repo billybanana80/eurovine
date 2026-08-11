@@ -1,0 +1,12 @@
+requests
+urllib3
+pywidevine
+pyplayready
+lxml
+pyyaml
+rich
+beaupy
+beautifulsoup4
+pycryptodome
+pyOpenSSL
+selectolax
