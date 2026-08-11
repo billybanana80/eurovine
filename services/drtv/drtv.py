@@ -25,21 +25,6 @@ try:
 except Exception:
     pass
 
-#   Ozivine: DRTV Video Downloader
-#   Author: billybanana
-#   Usage: enter a DRTV episode URL to retrieve the HLS Manifest.
-#   eg: https://www.dr.dk/drtv/episode/uniformen_-foerste-skoledag_576484
-#   Authentication: None
-#   Geo-Locking: Denmark may be required for some titles
-#   Quality: up to 1080p, depending on title
-#   Key Features:
-#   1. Extract Video ID: Parses the DRTV URL and fetches the episode page metadata.
-#   2. Extract Manifest: Reads DRTV's embedded page state and finds the HLS m3u8 URL.
-#   3. Print Download Information: Outputs manifest URL, detected resolution, and download command.
-#   4. Subtitles: external Danish subtitles are detected and translated to English in script.
-#   5. Note: this script is for DRTV's DRM-free HLS streams.
-
-
 SERVICE_NAME = "drtv"
 BASE_URL = "https://www.dr.dk"
 API_BASE_URL = "https://prod95-webfacing.dr-massive.com/api"

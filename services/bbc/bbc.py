@@ -21,21 +21,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-#   Ozivine: BBC iPlayer Video Downloader
-#   Author: billybanana
-#   Usage: enter the series/season/episode URL to retrieve the m3u8 Manifest.
-#   eg: https://www.bbc.co.uk/iplayer/episode/m001v6py/silent-witness-series-27-1-effective-range-part-1
-#   Authentication: None
-#   Geo-Locking: requires a UK IP address
-#   Quality: up to 2160p with certificate
-#   Key Features:
-#   1. Extract Video ID: Parses the BBC iPlayer video URL to extract the video id and then fetches the show/movie info from the BBC API.
-#   2. Print Download Information: Outputs the M3U8 URL required for downloading the video content.
-#   3. Note: this script functions for non-encrypted video files only (BBC iPlayer files are not currently encrypted).
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ANSI escape codes for colors
 session = requests.Session()
 BBC_CERTIFICATE_PATH = None
 

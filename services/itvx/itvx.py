@@ -25,20 +25,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-#   Ozivine: ITVX Video Downloader
-#   Author: billybanana
-#   Usage: enter the series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: https://www.itv.com/watch/the-beast-must-die/10a1313/10a1313a0001
-#   Authentication: cookies for premium content
-#   Geo-Locking: requires a UK address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the ITVX URL to extract the series name, season, and episode number.
-#   2. Extract PSSH: Retrieves and parses the MPD file to generate the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-#   5. Note: this script functions for encrypted video files only (ITVX files are all currently encrypted).
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_URL = "https://www.itv.com"

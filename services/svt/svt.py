@@ -26,16 +26,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: SVT Play Video Downloader
-#   Author: billybanana
-#   Usage: enter the SVT Play episode URL to retrieve the Manifest, Licence and
-#   ClearKey decryption keys.
-#   eg: https://www.svtplay.se/video/8opXazV/wisting/avsnitt-1
-#   Authentication: None
-#   Geo-Locking: optional proxy via Eurovine shared proxy configuration.
-#   Quality: prefers DASH full when available, falling back to HLS.
-
-
 SERVICE_NAME = "svt"
 BASE_URL = "https://www.svtplay.se"
 VIDEO_API_URL = "https://api.svt.se/video/{video_id}"

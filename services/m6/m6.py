@@ -57,14 +57,6 @@ except ImportError:
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: M6+ Video Downloader
-#   Usage: enter an M6+ episode URL to retrieve manifest, PSSH, keys, subtitles, and download command.
-#   Authentication: credentials are read from config.yaml but playback is probed anonymously first.
-#   Geo-Locking: France proxy is supported via config.yaml service_proxies.
-#   Quality: handles DASH/Widevine/PlayReady and HLS when exposed by the page.
-#   Subtitles: external French DASH/HLS subtitles are translated to an English SRT sidecar.
-
-
 SERVICE_NAME = "m6"
 SERVICE_LABEL = "M6+"
 BASE_URL = "https://www.m6.fr"

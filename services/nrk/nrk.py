@@ -28,16 +28,6 @@ for stream in (sys.stdout, sys.stderr):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: NRK Video Downloader
-#   Author: billybanana
-#   Usage: enter an NRK TV episode URL to retrieve the HLS manifest and download command.
-#   eg: https://tv.nrk.no/serie/agent-toerr/sesong/1/episode/MUHH96000125
-#   Authentication: none for supported public titles.
-#   Geo-Locking: optional proxy via Eurovine shared proxy configuration.
-#   Quality: promotes NRK's playback HLS URL to the 1080p CMAF HLS manifest when available.
-#   Subtitles: Norwegian WebVTT subtitles are translated to an external English SRT sidecar.
-
-
 SERVICE_NAME = "nrk"
 BASE_URL = "https://tv.nrk.no"
 PSAPI_BASE_URL = "https://psapi.nrk.no"

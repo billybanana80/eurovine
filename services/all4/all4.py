@@ -29,23 +29,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-#   Ozivine: All4 Video Downloader
-#   Author: billybanana
-#   Usage: enter the series/season/episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: https://www.channel4.com/programmes/location-location-location/on-demand/72080-013 or movies eg: https://www.channel4.com/programmes/top-gun-maverick/on-demand/74807-001
-#   Authentication: Client ID and secret
-#   Geo-Locking: requires a UK address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the All4 URL to extract the series name, season, and episode number.
-#   2. Extract PSSH: Retrieves and parses the MPD file to generate the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-#   5. Note: this script functions for encrypted video files only (All4 files are all currently encrypted).
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ANSI escape codes for colors
 WVD_PATH = None
 DOWNLOAD_DIR = None
 n_m3u8dl = "N_m3u8DL-RE"  # Change to however it is named

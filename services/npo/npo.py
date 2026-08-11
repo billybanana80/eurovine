@@ -29,20 +29,6 @@ if hasattr(sys.stderr, "reconfigure"):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: NPO Video Downloader
-#   Author: billybanana
-#   Usage: enter an NPO episode URL to retrieve the Dash Manifest.
-#   eg: https://npo.nl/start/afspelen/het-meisje-in-het-bos
-#   Authentication: None
-#   Geo-Locking: Netherlands may be required for some titles
-#   Quality: 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the NPO URL and fetches the episode page metadata.
-#   2. Extract Manifest: Reads NPO's embedded page state and finds the DASH MPD URL.
-#   3. Print Download Information: Outputs manifest URL, detected resolution, and download command.
-#   4. Subtitles: external Dutch subtitles are detected and translated to English in script.
-#   5. Note: this script is for NPO's free tier streams only. Paid content not available.
-
 SERVICE_NAME = "npo"
 SCRIPT_DIR = Path(__file__).resolve().parent
 NPO_DRM_TYPE = "widevine"

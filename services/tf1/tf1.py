@@ -1,7 +1,3 @@
-﻿# tf1.py - TF1 Video Downloader
-# Author: billybanana
-# Usage: enter the TF1 video URL to retrieve the Manifest, Licence, PSSH and Decryption keys.
-
 import base64
 import binascii
 import html

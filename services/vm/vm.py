@@ -1,4 +1,4 @@
-﻿import re
+import re
 import requests
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
@@ -28,20 +28,6 @@ if hasattr(sys.stderr, "reconfigure"):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Virgin Media Video Downloader
-#   Author: billybanana
-#   Usage: enter the episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: https://play.virginmediatelevision.ie/watch/vod/52528176/blood-ep1 or https://play.virginmediatelevision.ie/watch/replay/19196798/six-nations-2025-live-wales-v-ireland
-#   Authentication: None
-#   Geo-Locking: requires a Ireland IP address
-#   Quality: up to 1080p
-#   Key Features:
-#   1. Extract Video ID: Parses the Virgin Media URL to extract the video ID and makes an API call to obtain the manifests.
-#   2. Extract PSSH: Retrieves and parses the MPD file to generate the PSSH data necessary for Widevine decryption.
-#   3. Fetch Decryption Keys: Uses the PSSH and license URL to request and retrieve the Widevine decryption keys.
-#   4. Print Download Information: Outputs the MPD URL, license URL, PSSH, and decryption keys required for downloading and decrypting the video content.
-
-# ANSI escape codes for colors
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 config = {}
 SAVE_PATH = None

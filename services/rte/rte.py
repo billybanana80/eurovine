@@ -26,26 +26,6 @@ if hasattr(sys.stderr, "reconfigure"):
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-#   Ozivine: RTE Video Downloader
-#   Author: billybanana
-#   Usage: enter the episode URL to retrieve the MPD, Licence, PSSH and Decryption keys.
-#   eg: https://www.rte.ie/player/series/hidden-assets/SI0000012001?epguid=IP10012641-03-0001
-#   Authentication: None
-#   Geo-Locking: requires an IE IP address (handled via Surfshark HTTPS proxy)
-#   Quality: up to 1080p
-#
-#   Flow:
-#     1. Parse series GUID and ep GUID from the RTE Player URL
-#     2. Resolve episode metadata via RTE's mpx "all-programs" feed
-#     3. Get anonymous MPX token + account ID
-#     4. Request SMIL from theplatform, extract MPD URL + releasePid
-#     5. Fetch MPD, extract Widevine PSSH and max resolution
-#     6. Get Widevine license from theplatform and extract decryption keys
-#     7. Print ready-to-run N_m3u8DL-RE command, using configured service proxy
-
-
-# ANSI escape codes for colors
-# Configuration
 CONFIG = {
     "headers": {
         "user-agent": "Dalvik/2.1.0 (Linux; U; Android 13; SM-A536E Build/RSR1.210722.013.A2)",

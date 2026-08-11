@@ -1,7 +1,3 @@
-# frtv.py - France TV Video Downloader
-# Author: billybanana
-# Usage: enter a France TV video URL to retrieve the signed MPD/M3U8 manifest and download command.
-
 import base64
 import binascii
 import html

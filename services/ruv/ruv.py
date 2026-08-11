@@ -29,16 +29,6 @@ for stream in (sys.stdout, sys.stderr):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: RUV Video Downloader
-#   Author: billybanana
-#   Usage: enter an RUV episode URL to retrieve the HLS manifest and download command.
-#   eg: https://www.ruv.is/sjonvarp/spila/hundarnir/39278/bmim71
-#   Authentication: none for supported public titles.
-#   Geo-Locking: Iceland proxy via Eurovine's shared proxy configuration.
-#   Quality: HLS, best video/audio selected by N_m3u8DL-RE.
-#   Subtitles: Icelandic WebVTT subtitles are translated to an external English SRT sidecar.
-
-
 SERVICE_NAME = "ruv"
 BASE_URL = "https://www.ruv.is"
 TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"

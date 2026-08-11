@@ -30,16 +30,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#   Ozivine: TV4 Play Video Downloader
-#   Author: billybanana
-#   Usage: enter a TV4 Play episode URL to retrieve the Manifest, Licence, PSSH
-#   and Decryption keys when DRM is present.
-#   eg: https://www.tv4play.se/video/ea81550fc2f95cb5bebd/avsnitt-1-julspecial-dubrovnik
-#   Authentication: TV4 account token or browser cookies from Eurovine config.
-#   Geo-Locking: optional proxy via Eurovine shared proxy configuration.
-#   Quality: prefers DASH when TV4 returns it, otherwise HLS.
-
-
 SERVICE_NAME = "tv4"
 BASE_URL = "https://www.tv4play.se"
 REFRESH_URL = "https://avod-auth-alb.a2d.tv/oauth/refresh"
