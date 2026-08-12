@@ -40,7 +40,7 @@ proxy_providers:
       NL: https://username:password@nl-ams.prod.surfshark.com:443
       FR: https://username:password@fr-par.prod.surfshark.com:443
       SE: https://username:password@se-sto.prod.surfshark.com:443
-      NO: https://username:password@no-osl.prod.surfshark.com:443
+      "NO": https://username:password@no-osl.prod.surfshark.com:443
       IS: https://username:password@is-rkv.prod.surfshark.com:443
   nordvpn:
     username: your_proxy_username
@@ -52,11 +52,11 @@ proxy_providers:
       NL: https://username:password@nl993.proxy.nordvpn.com:89
       FR: https://username:password@fr1200.proxy.nordvpn.com:89
       SE: https://username:password@se682.proxy.nordvpn.com:89
-      NO: https://username:password@no269.proxy.nordvpn.com:89
+      "NO": https://username:password@no269.proxy.nordvpn.com:89
       IS: https://username:password@is96.proxy.nordvpn.com:89
 vmplayer_device_id: # this will populate automatically
 bbc:
-  certificate: D:\Downloads\Eurovine\certificates\iplayer.pem # your path to certificate file
+  certificate: D:/Downloads/Eurovine/certificates/iplayer.pem # your path to certificate file
 m6:
   prefer_hardware: true
   prefer_hls: false
