@@ -18,6 +18,7 @@ from pywidevine.pssh import PSSH
 from beaupy.spinners import Spinner
 import icons
 from colors import bcolors
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -157,9 +158,9 @@ def print_series_rule(service_label, series_title):
     right_width = max(rule_width - len(title) - left_width, 0)
     print(
         f"{bcolors.LIGHTBLUE}"
-        f"{'-' * left_width}"
-        f"{bcolors.ENDC} {bcolors.LIGHTBLUE}{service_label}: {bcolors.ENDC}{series_title} "
-        f"{bcolors.LIGHTBLUE}{'-' * right_width}{bcolors.ENDC}"
+        f"{'─' * left_width}"
+        f"{bcolors.ENDC} {bcolors.LIGHTBLUE}{service_label}: {bcolors.ENDC}{bcolors.WHITE}{series_title}{bcolors.ENDC} "
+        f"{bcolors.LIGHTBLUE}{'─' * right_width}{bcolors.ENDC}"
     )
 
 def list_episode_items(episode_items):
@@ -176,25 +177,25 @@ def list_episode_items(episode_items):
     print()
     print_series_rule("ITVX Series", show_title)
     print()
-    print(f"{len(group_labels)} Series" + (f",  {series_summary}" if series_summary else ""))
+    print(f"{bcolors.GRAY}{len(group_labels)} Series" + (f",  {series_summary}" if series_summary else "") + f"{bcolors.ENDC}")
 
     for series_index, series_label in enumerate(group_labels):
         series_items = grouped_items[series_label]
         if series_index > 0:
-            print("|")
+            print(f"{bcolors.GRAY}│{bcolors.ENDC}")
 
         group_is_last = series_index == len(group_labels) - 1
-        group_branch = "`-" if group_is_last else "|-"
-        group_child_prefix = "   " if group_is_last else "|  "
-        print(f"{group_branch} {series_label}: {len(series_items)} episodes")
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
+        print(f"{bcolors.GRAY}{group_branch} {series_label}: {bcolors.ENDC}{len(series_items)} episodes")
 
         for episode_index, item in enumerate(series_items):
             is_last = episode_index == len(series_items) - 1
-            branch = "`-" if is_last else "|-"
-            url_branch = "  " if is_last else "| "
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
             episode_label = item.get("episode") or "-"
-            print(f"{group_child_prefix}{branch} {episode_label}. {item.get('title') or '-'}")
-            print(f"{group_child_prefix}{url_branch} {bcolors.LIGHTBLUE}{item.get('url') or '-'}{bcolors.ENDC}")
+            print(f"{bcolors.GRAY}{group_child_prefix}{branch} {episode_label}. {bcolors.ENDC}{item.get('title') or '-'}")
+            print(f"{bcolors.GRAY}{group_child_prefix}{url_branch} {bcolors.ENDC}{bcolors.LIGHTBLUE}{item.get('url') or '-'}{bcolors.ENDC}")
 
 def export_episode_urls(episode_items):
     """Write listed ITVX episode URLs to Eurovine's shared export directory."""
@@ -634,7 +635,7 @@ class ITV:
         warn_if_partial_range_match(parsed_selector, selected)
         return selected
 
-    def download_selected_episodes(self, series_url, selector):
+    def download_selected_episodes(self, series_url, selector, quality=None):
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
         episode_items = self.select_episode_items(series_url, selector)
         print_download_queue(episode_items)
@@ -648,7 +649,7 @@ class ITV:
 
         for index, item in enumerate(episode_items, start=1):
             print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {item.get('title') or item.get('url')}{bcolors.ENDC}")
-            self.download(item["url"], auto_download=True)
+            self.download(item["url"], auto_download=True, quality=quality)
 
     def get_pssh(self, mpd_url: str) -> str:
         r = self.client.get(mpd_url, timeout=30)
@@ -798,7 +799,7 @@ class ITV:
         return True
 
 
-    def download(self, url: str, auto_download=False, interactive=False):
+    def download(self, url: str, auto_download=False, interactive=False, quality=None):
         # Step 1: Fetch and parse `#__NEXT_DATA__` metadata
         spinner = Spinner()
         spinner.start()
@@ -820,6 +821,7 @@ class ITV:
 
             # Step 7: Construct the save file name with properly formatted season and episode numbers
             save_name = build_save_name(programme, episode, max_height)
+            save_name = apply_quality_to_filename(save_name, quality)
         except (ConnectionError, ValueError, requests.RequestException) as exc:
             spinner.stop()
             print(f"{bcolors.RED}{exc}{bcolors.ENDC}")
@@ -838,7 +840,7 @@ class ITV:
             print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
 
         # Step 8: Construct and execute the download command
-        selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+        selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
         command = f'N_m3u8DL-RE "{mpd_url}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{save_name}" --save-dir "{SAVE_PATH}" --key {key}'
         command = append_downloader_proxy(command)
         print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy_command(command)}")
@@ -855,7 +857,7 @@ class ITV:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return False
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for ITVX (Widevine)."""
     if not video_url:
         raise ValueError("No ITVX URL provided.")
@@ -890,13 +892,13 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an ITVX series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            itv.download_selected_episodes(video_url, download_selector)
+            itv.download_selected_episodes(video_url, download_selector, quality)
         except (LookupError, ValueError, ConnectionError) as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
-        itv.download(video_url, interactive=(mode == "interactive"))
+        itv.download(video_url, interactive=(mode == "interactive"), quality=quality)
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")

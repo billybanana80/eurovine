@@ -21,6 +21,7 @@ from colors import bcolors
 from pywidevine.cdm import Cdm
 from pywidevine.device import Device
 from pywidevine.pssh import PSSH
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url, mask_proxy_command
 
 
@@ -1209,8 +1210,8 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, keys=None, interactive=False):
-    selectors = "" if interactive else "--select-video best --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, keys=None, interactive=False, quality=None):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1237,7 +1238,7 @@ def highest_stream_resolution(streams, default="Unknown"):
     return f"{max(heights)}p" if heights else default
 
 
-def resolve_video(video_url, interactive=False):
+def resolve_video(video_url, interactive=False, quality=None):
     video_url = canonical_url(video_url)
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
@@ -1255,7 +1256,8 @@ def resolve_video(video_url, interactive=False):
 
     resolution = highest_stream_resolution(playback.streams, get_resolution(playback))
     filename = format_filename(metadata, resolution)
-    command = build_download_command(playback, filename, keys, interactive=interactive)
+    filename = apply_quality_to_filename(filename, quality)
+    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality)
     return playback, keys, resolution, filename, command
 
 
@@ -1535,10 +1537,10 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, auto_download=False, interactive=False):
+def process_video(video_url, auto_download=False, interactive=False, quality=None):
     video_url = canonical_url(video_url)
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive))
+    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     if metadata.title != "Unknown" or episode_str or metadata.episode_title:
@@ -1551,7 +1553,7 @@ def process_video(video_url, auto_download=False, interactive=False):
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector):
+def download_selected_episodes(series_url, selector, quality=None):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
@@ -1564,7 +1566,7 @@ def download_selected_episodes(series_url, selector):
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True)
+        process_video(item["url"], auto_download=True, quality=quality)
 
 
 def export_episode_urls(episode_items):
@@ -1580,7 +1582,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for France TV (Widevine where available)."""
     try:
         if not video_url:
@@ -1608,7 +1610,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a France TV series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector)
+            download_selected_episodes(video_url, download_selector, quality)
             return
 
         if mode == "info":
@@ -1627,7 +1629,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             return
 
         if is_episode_url(video_url):
-            process_video(video_url, interactive=(mode == "interactive"))
+            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
             return
 
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")

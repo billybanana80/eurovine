@@ -50,6 +50,7 @@ Eurovine currently supports 17 services:
 - Optional BBC UHD mode with a configured BBC certificate.
 - Optional proxy support using Surfshark or NordVPN-style HTTPS proxy endpoints.
 - Shared list/export/download-selector behaviour across converted services.
+- Optional quality selection with `-q/--quality` for single episode and selector-based downloads.
 - English subtitle sidecar translation for non-English services where subtitles are available.
 - Shared `colors.py`, `icons.py`, `proxy.py`, and `config.yaml` usage from the Eurovine root.
 
@@ -301,6 +302,7 @@ The same flags can be entered after the URL when using the interactive prompt.
 | List | `--list` or `-l` | Lists available episodes for a supported show/series URL. |
 | Export | `--export` or `-x` | Used with list mode to export episode URLs to the `export/` folder. |
 | Download selector | `--download` or `-d` | Downloads a selected episode, season, or range from a show/series URL. |
+| Quality | `--quality` or `-q` | With auto or download selector mode, selects a video height such as `720` and uses that height in the generated filename. |
 | BBC UHD catalogue | `bbc -u` | Lists the current BBC iPlayer programmes advertised as available in UHD. |
 | BBC UHD download | `--ultra` or `-u` with a BBC URL | Requests UHD streams using the configured BBC certificate. |
 | Clear cache | `--clear-cache` or `-c` | Clears known cached service tokens from `config.yaml` and removes files from `temp/`. |
@@ -389,6 +391,19 @@ Manual stream selection:
 ```powershell
 python eurovine.py "https://www.bbc.co.uk/iplayer/episode/m002k78r/blue-lights-series-3-3-the-bird" -a
 ```
+
+Quality selection:
+
+```powershell
+python eurovine.py "https://www.channel4.com/programmes/come-dine-with-me/on-demand/78463-009" -q 720
+python eurovine.py "https://www.bbc.co.uk/iplayer/episodes/p0f2cxpr" -d s03e03 -q 720
+python eurovine.py "https://www.m6.fr/desperate-housewives-p_840" -d s08 -q 576
+python eurovine.py "https://www.france.tv/france-3/opj/" -d s02e01-s02e02 -q 576
+```
+
+Quality mode builds the download command with a specific video height, using an exact-height selector such as `--select-video res=x720$` instead of `--select-video best`. The requested height is also used in filenames for actual download modes, so a `-q 720` download is saved with a `720p` filename tag.
+
+It is recommended to check available streams with `-i` first, because requesting a height that does not exist can leave N_m3u8DL-RE with no matching video stream selected. BBC `-u/--ultra` remains a separate UHD mode and is not changed by quality mode.
 
 Clear cached tokens and temporary files:
 

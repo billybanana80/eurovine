@@ -22,6 +22,7 @@ from colors import bcolors
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from urllib.parse import urljoin
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -934,8 +935,8 @@ def format_videoname(videoname, max_height):
     formatted_name = videoname.replace(' ', '.').replace('_', '.')
     return f"{formatted_name}.{max_height}p.ALL4.WEB-DL.AAC2.0.H.264"
 
-def get_streams(mpd, decryption_key, output_title, auto_download=False, interactive=False):
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+def get_streams(mpd, decryption_key, output_title, auto_download=False, interactive=False, quality=None):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     command = f'N_m3u8DL-RE "{mpd}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{output_title}" --save-dir "{DOWNLOAD_DIR}" --key {decryption_key}'
     command = append_downloader_proxy(command)
     
@@ -1042,7 +1043,7 @@ def info(url):
     print_episode_metadata(item)
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{formatted_videoname}.mkv")
 
-def process_video(url, auto_download=False, interactive=False):
+def process_video(url, auto_download=False, interactive=False, quality=None):
     spinner = Spinner()
     spinner.start()
     try:
@@ -1051,6 +1052,7 @@ def process_video(url, auto_download=False, interactive=False):
         videoname = clean(videoname)
         max_height = extract_max_height(playback["manifest_url"])
         formatted_videoname = format_videoname(videoname, max_height)
+        formatted_videoname = apply_quality_to_filename(formatted_videoname, quality)
     except Exception:
         spinner.stop()
         raise
@@ -1060,14 +1062,14 @@ def process_video(url, auto_download=False, interactive=False):
     decryption_keys = playback.get("keys") or []
     if not decryption_keys:
         raise RuntimeError("No decryption keys were returned for this Channel 4 stream.")
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     download_command = f'N_m3u8DL-RE "{playback["manifest_url"]}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{formatted_videoname}" --save-dir "{DOWNLOAD_DIR}" --key {decryption_keys[0]}'
     download_command = append_downloader_proxy(download_command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy_command(download_command)}")
-    get_streams(playback["manifest_url"], decryption_keys[0], formatted_videoname, auto_download=auto_download, interactive=interactive)
+    get_streams(playback["manifest_url"], decryption_keys[0], formatted_videoname, auto_download=auto_download, interactive=interactive, quality=quality)
     return
 
-def download_selected_episodes(series_url, selector):
+def download_selected_episodes(series_url, selector, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -1082,9 +1084,9 @@ def download_selected_episodes(series_url, selector):
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item['url'], auto_download=True)
+        process_video(item['url'], auto_download=True, quality=quality)
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for Channel 4 (Widevine)."""
     if not video_url:
         raise ValueError("No Channel 4 URL provided.")
@@ -1118,14 +1120,14 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a Channel 4 series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            download_selected_episodes(video_url, download_selector)
+            download_selected_episodes(video_url, download_selector, quality)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
         try:
-            process_video(video_url, interactive=(mode == "interactive"))
+            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return

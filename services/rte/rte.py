@@ -15,6 +15,7 @@ from pywidevine.pssh import PSSH
 import icons
 from colors import bcolors
 from pathlib import Path
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 from beaupy.spinners import Spinner
 
@@ -788,7 +789,7 @@ def build_video_name(episode, max_res):
     return f"{show_clean}.S{season_num:02d}E{episode_num:02d}.{max_res}.RTE.WEB-DL.AAC2.0.H.264"
 
 
-def resolve_playback(ep_url, interactive=False):
+def resolve_playback(ep_url, interactive=False, quality=None):
     episode = get_episode_metadata(ep_url)
     media_list = episode.get("plprogramavailability$media") or []
     if not media_list:
@@ -813,10 +814,11 @@ def resolve_playback(ep_url, interactive=False):
         raise Exception("No decryption keys found in license response")
 
     video_name = build_video_name(episode, max_res)
+    video_name = apply_quality_to_filename(video_name, quality)
     key = keys[0]
     command = (
         f'N_m3u8DL-RE.exe "{mpd_url}" '
-        f'{"" if interactive else "--select-video best --select-audio lang=en:for=best --select-subtitle all "}'
+        f'{"" if interactive else f"{video_selector(quality)} --select-audio lang=en:for=best --select-subtitle all "}'
         f'-mt -M format=mkv:muxer=mkvmerge '
         f'--thread-count 16 '
         f'--download-retry-count 10 '
@@ -866,12 +868,12 @@ def info(ep_url):
 
 
 # ---- Main ---------------------------------------------------------------
-def process_video(ep_url, auto_download=False, interactive=False):
+def process_video(ep_url, auto_download=False, interactive=False, quality=None):
     try:
         spinner = Spinner()
         spinner.start()
         try:
-            resolved = resolve_playback(ep_url, interactive=interactive)
+            resolved = resolve_playback(ep_url, interactive=interactive, quality=quality)
         except Exception:
             spinner.stop()
             raise
@@ -950,10 +952,11 @@ def process_video(ep_url, auto_download=False, interactive=False):
         # 7) Build nice filename + N_m3u8DL-RE command
         show_clean = re.sub(r"[^A-Za-z0-9]+", ".", show_name).strip(".")
         video_name = f"{show_clean}.S{season_num:02d}E{episode_num:02d}.{max_res}.RTE.WEB-DL.AAC2.0.H.264"
+        video_name = apply_quality_to_filename(video_name, quality)
 
         command = (
             f'N_m3u8DL-RE.exe "{mpd_url}" '
-            f'--select-video best --select-audio lang=en:for=best --select-subtitle all '
+            f'{video_selector(quality)} --select-audio lang=en:for=best --select-subtitle all '
             f'-mt -M format=mkv:muxer=mkvmerge '
             f'--thread-count 16 '
             f'--download-retry-count 10 '
@@ -982,7 +985,7 @@ def process_video(ep_url, auto_download=False, interactive=False):
         return False
 
 
-def download_selected_episodes(series_url, selector):
+def download_selected_episodes(series_url, selector, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -997,7 +1000,7 @@ def download_selected_episodes(series_url, selector):
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item["url"], auto_download=True)
+        process_video(item["url"], auto_download=True, quality=quality)
 
 
 def parse_args(argv=None):
@@ -1066,7 +1069,7 @@ def main():
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
 
 
-def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None):
+def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
     configure_service(downloads_path, wvd_device_path)
     if mode == "list":
         items = [collect_episode_item(video_url)] if is_episode_url(video_url) else collect_episode_items(video_url, show_progress=False)
@@ -1076,8 +1079,8 @@ def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", expor
             print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {out}{bcolors.ENDC}")
         return
     if mode == "info": return info(video_url)
-    if mode == "download": return download_selected_episodes(video_url, download_selector)
-    if is_episode_url(video_url): return process_video(video_url, interactive=(mode == "interactive"))
+    if mode == "download": return download_selected_episodes(video_url, download_selector, quality)
+    if is_episode_url(video_url): return process_video(video_url, interactive=(mode == "interactive"), quality=quality)
     raise ValueError("Series URLs require --list/-l or --download/-d.")
 
 main = eurovine_main

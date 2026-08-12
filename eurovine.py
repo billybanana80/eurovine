@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from colors import bcolors
 from proxy_config import configure_proxy
+from quality_utils import normalize_quality
 import icons
 
 for stream in (sys.stdout, sys.stderr):
@@ -33,7 +34,7 @@ for stream in (sys.stdout, sys.stderr):
 #   Full usage details and examples are in README.md.
 
 console = Console()
-__version__ = "1.0"  # Replace with the actual version
+__version__ = "1.1"  # Replace with the actual version
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.yaml"
 TEMP_DIR = SCRIPT_DIR / "temp"
@@ -186,13 +187,35 @@ def parse_args():
     mode_group.add_argument("--download", "-d", metavar="SELECTOR", help="Download from a show URL using sXXeXX, sXXXXeXX, sXX, or sXXXX")
     parser.add_argument("--export", "-x", action="store_true", help="Export list-mode episode URLs to a text file")
     parser.add_argument("--ultra", "-u", action="store_true", help="With a BBC URL, request UHD streams; with 'bbc', list the BBC UHD catalogue")
+    parser.add_argument("--quality", "-q", type=normalize_quality, help="Select video height for downloads, e.g. 720 or 1080")
     parser.add_argument("--clear-cache", "-c", action="store_true", help="Clear cached service tokens from config.yaml and remove files from temp/")
     return parser.parse_args()
 
-def parse_prompt_input(value, mode, export_list=False, download_selector=None, ultra=False):
-    parts = value.strip().split()
+def normalize_prompt_flag_spacing(parts):
+    normalized = []
+    short_flags = {"i", "a", "l", "d", "x", "u", "q", "c"}
+    long_flags = {"info", "action", "list", "download", "export", "ultra", "quality", "clear-cache"}
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part in {"-", "--"} and index + 1 < len(parts):
+            next_part = parts[index + 1]
+            if part == "-" and next_part in short_flags:
+                normalized.append(f"-{next_part}")
+                index += 2
+                continue
+            if part == "--" and next_part in long_flags:
+                normalized.append(f"--{next_part}")
+                index += 2
+                continue
+        normalized.append(part)
+        index += 1
+    return normalized
+
+def parse_prompt_input(value, mode, export_list=False, download_selector=None, ultra=False, quality=None):
+    parts = normalize_prompt_flag_spacing(value.strip().split())
     if not parts:
-        return "", mode, export_list, download_selector, ultra
+        return "", mode, export_list, download_selector, ultra, quality
 
     detected_modes = []
     url_parts = []
@@ -205,6 +228,12 @@ def parse_prompt_input(value, mode, export_list=False, download_selector=None, u
             detected_modes.append("interactive")
         elif part in {"--list", "-l"}:
             detected_modes.append("list")
+        elif part.startswith("--download="):
+            detected_modes.append("download")
+            download_selector = part.split("=", 1)[1]
+        elif part.startswith("-d") and len(part) > 2:
+            detected_modes.append("download")
+            download_selector = part[2:]
         elif part in {"--download", "-d"}:
             detected_modes.append("download")
             if index + 1 >= len(parts):
@@ -215,6 +244,15 @@ def parse_prompt_input(value, mode, export_list=False, download_selector=None, u
             export_list = True
         elif part in {"--ultra", "-u"}:
             ultra = True
+        elif part.startswith("--quality="):
+            quality = normalize_quality(part.split("=", 1)[1])
+        elif part.startswith("-q") and len(part) > 2:
+            quality = normalize_quality(part[2:])
+        elif part in {"--quality", "-q"}:
+            if index + 1 >= len(parts):
+                raise ValueError("Quality requires a height such as 720 or 1080.")
+            index += 1
+            quality = normalize_quality(parts[index])
         else:
             url_parts.append(part)
         index += 1
@@ -225,7 +263,7 @@ def parse_prompt_input(value, mode, export_list=False, download_selector=None, u
     if detected_modes:
         mode = detected_modes[-1]
 
-    return " ".join(url_parts).strip(), mode, export_list, download_selector, ultra
+    return " ".join(url_parts).strip(), mode, export_list, download_selector, ultra, quality
 
 def input_label_for_mode(mode):
     return "Series URL" if mode in {"list", "download"} else "Episode URL"
@@ -249,6 +287,7 @@ def main():
     export_list = parsed_args.export
     download_selector = parsed_args.download
     ultra = parsed_args.ultra
+    quality = parsed_args.quality
 
     config = load_config()
     downloads_path = config.get('downloads_path')
@@ -263,7 +302,7 @@ def main():
     else:
         # Prompt user for manual input if no command-line argument is given
         prompt_value = input(f"{bcolors.LIGHTBLUE}Enter URL with optional flags: {bcolors.ENDC}").strip()
-        video_url, mode, export_list, download_selector, ultra = parse_prompt_input(prompt_value, mode, export_list, download_selector, ultra)
+        video_url, mode, export_list, download_selector, ultra, quality = parse_prompt_input(prompt_value, mode, export_list, download_selector, ultra, quality)
 
     if video_url.casefold() in {"bbc", "bbc_uhd", "bbc-uhd", "iplayer"} and ultra:
         print(f"{bcolors.LIGHTBLUE}Service: {bcolors.ENDC}BBC UHD Catalogue")
@@ -282,87 +321,87 @@ def main():
         service_key = "all4"
         service_module = "services.all4.all4"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating All4{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)
     elif video_url.startswith("https://www.bbc.co.uk"):
         service_key = "bbc"
         service_module = "services.bbc.bbc"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating BBC{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, (config.get("bbc") or {}).get("certificate"), mode, export_list, download_selector, ultra)
+        args = (video_url, downloads_path, wvd_device_path, (config.get("bbc") or {}).get("certificate"), mode, export_list, download_selector, ultra, quality)
     elif video_url.startswith("https://www.dr.dk/drtv"):
         service_key = "drtv"
         service_module = "services.drtv.drtv"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating DRTV{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)
     elif video_url.startswith("https://www.france.tv"):
         service_key = "frtv"
         service_module = "services.frtv.frtv"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating France TV{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://www.itv.com"):
         service_key = "itvx"
         service_module = "services.itvx.itvx"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating ITVX{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)                        
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)                        
     elif video_url.startswith("https://www.m6.fr"):
         service_key = "m6"
         service_module = "services.m6.m6"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating M6{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, prd_device_path, credentials.get("m6"), config.get("m6"), mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, prd_device_path, credentials.get("m6"), config.get("m6"), mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://www.channel5.com"):
         service_key = "my5"
         service_module = "services.my5.my5"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating My5{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, (config.get("my5") or {}).get("certificate"), mode, export_list, download_selector)
+        args = (video_url, downloads_path, wvd_device_path, (config.get("my5") or {}).get("certificate"), mode, export_list, download_selector, quality)
     elif video_url.startswith("https://tv.nrk.no"):
         service_key = "nrk"
         service_module = "services.nrk.nrk"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating NRK{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://www.rte.ie"):
         service_key = "rte"
         service_module = "services.rte.rte"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating RTE{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://www.ruv.is"):
         service_key = "ruv"
         service_module = "services.ruv.ruv"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating RUV{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)   
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)   
     elif video_url.startswith("https://player.stv.tv"):
         service_key = "stv"
         service_module = "services.stv.stv"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating STV{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://u.co.uk"):
         service_key = "u"
         service_module = "services.u.u"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating U{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)  
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)  
     elif video_url.startswith("https://play.virginmediatelevision.ie"):
         service_key = "vm"
         service_module = "services.vm.vm"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating Virgin Media{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, config.get("vmplayer_device_id"), mode, export_list, download_selector)                                                   
+        args = (video_url, downloads_path, wvd_device_path, config.get("vmplayer_device_id"), mode, export_list, download_selector, quality)                                                   
     elif video_url.startswith("https://www.tf1.fr"):
         service_key = "tf1"
         service_module = "services.tf1.tf1"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating TF1{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, credentials.get("tf1"), config.get("tf1"), mode, export_list, download_selector)   
+        args = (video_url, downloads_path, wvd_device_path, credentials.get("tf1"), config.get("tf1"), mode, export_list, download_selector, quality)   
     elif video_url.startswith("https://npo.nl"):
         service_key = "npo"
         service_module = "services.npo.npo"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating NPO{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector) 
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality) 
     elif video_url.startswith("https://www.tv4play.se"):
         service_key = "tv4"
         service_module = "services.tv4.tv4"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating TV4{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, cookies_path, credentials.get("tv4"), config.get("tv4"), mode, export_list, download_selector)                       
+        args = (video_url, downloads_path, wvd_device_path, cookies_path, credentials.get("tv4"), config.get("tv4"), mode, export_list, download_selector, quality)                       
     elif video_url.startswith("https://www.svtplay.se"):
         service_key = "svt"
         service_module = "services.svt.svt"
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Eurovine..........initiating SVT{bcolors.ENDC}")
-        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector)                     
+        args = (video_url, downloads_path, wvd_device_path, mode, export_list, download_selector, quality)                     
     else:
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Unsupported URL. Please enter a valid video URL from All4, BBC, DRTV, France TV, ITVX, M6, My5, NPO, NRK, RTE, RUV, STV, SVT, TF1, TV4, U or Virgin Media, or use bbc -u for the BBC UHD catalogue.{bcolors.ENDC}")
         sys.exit(1)

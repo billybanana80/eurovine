@@ -1,6 +1,7 @@
 import html
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ from beaupy.spinners import Spinner
 
 import icons
 from colors import bcolors
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url, mask_proxy_command
 
 
@@ -409,14 +411,18 @@ def series_group_sort_key(label):
     return int(match.group(0)) if match else 9999
 
 
-def print_series_rule(prefix, title, width=120):
-    label = f" {prefix}: {title} "
-    if len(label) >= width:
-        print(f"{bcolors.GRAY}{label}{bcolors.ENDC}")
-        return
-    left = (width - len(label)) // 2
-    right = width - len(label) - left
-    print(f"{bcolors.GRAY}{'─' * left}{label}{'─' * right}{bcolors.ENDC}")
+def print_series_rule(service_label, series_title):
+    terminal_width = shutil.get_terminal_size((88, 20)).columns
+    title = f" {service_label}: {series_title} "
+    rule_width = max(terminal_width, len(title) + 4)
+    left_width = max((rule_width - len(title)) // 2, 0)
+    right_width = max(rule_width - len(title) - left_width, 0)
+    print(
+        f"{bcolors.LIGHTBLUE}"
+        f"{'─' * left_width}"
+        f"{bcolors.ENDC} {bcolors.LIGHTBLUE}{service_label}: {bcolors.ENDC}{bcolors.WHITE}{series_title}{bcolors.ENDC} "
+        f"{bcolors.LIGHTBLUE}{'─' * right_width}{bcolors.ENDC}"
+    )
 
 
 def list_episode_items(episode_items):
@@ -1055,8 +1061,8 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, interactive=False):
-    selectors = "" if interactive else "--select-video best --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, interactive=False, quality=None):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1085,7 +1091,7 @@ def run_with_spinner(callback):
     return result
 
 
-def resolve_video(video_url, interactive=False):
+def resolve_video(video_url, interactive=False, quality=None):
     video_url = canonical_url(video_url)
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
@@ -1110,7 +1116,8 @@ def resolve_video(video_url, interactive=False):
     if resolution == "Unknown" and playback.manifest_type == "hls":
         resolution = get_hls_resolution(playback.manifest_url)
     filename = format_filename(metadata, resolution)
-    command = build_download_command(playback, filename, interactive=interactive)
+    filename = apply_quality_to_filename(filename, quality)
+    command = build_download_command(playback, filename, interactive=interactive, quality=quality)
     return playback, resolution, filename, command
 
 
@@ -1175,10 +1182,10 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, auto_download=False, interactive=False):
+def process_video(video_url, auto_download=False, interactive=False, quality=None):
     video_url = canonical_url(video_url)
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    playback, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive))
+    playback, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     if metadata.title != "Unknown" or episode_str or metadata.episode_title:
@@ -1194,7 +1201,7 @@ def process_video(video_url, auto_download=False, interactive=False):
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector):
+def download_selected_episodes(series_url, selector, quality=None):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
@@ -1207,7 +1214,7 @@ def download_selected_episodes(series_url, selector):
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True)
+        process_video(item["url"], auto_download=True, quality=quality)
 
 
 def export_episode_urls(episode_items):
@@ -1223,7 +1230,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported {len(episode_items)} NRK episode URLs to {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for NRK DRM-free HLS."""
     try:
         if not video_url:
@@ -1250,7 +1257,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an NRK series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector)
+            download_selected_episodes(video_url, download_selector, quality)
             return
 
         if mode == "info":
@@ -1269,7 +1276,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
             return
 
-        process_video(video_url, interactive=(mode == "interactive"))
+        process_video(video_url, interactive=(mode == "interactive"), quality=quality)
     except Exception as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
         raise

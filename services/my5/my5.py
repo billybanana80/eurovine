@@ -21,6 +21,7 @@ from beaupy.spinners import Spinner
 import icons
 from colors import bcolors
 from pathlib import Path
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -448,9 +449,9 @@ def print_series_rule(service_label, series_title):
     right_width = max(rule_width - len(title) - left_width, 0)
     print(
         f"{bcolors.LIGHTBLUE}"
-        f"{'-' * left_width}"
+        f"{'─' * left_width}"
         f"{bcolors.ENDC} {bcolors.LIGHTBLUE}{service_label}: {bcolors.ENDC}{bcolors.WHITE}{series_title}{bcolors.ENDC} "
-        f"{bcolors.LIGHTBLUE}{'-' * right_width}{bcolors.ENDC}"
+        f"{bcolors.LIGHTBLUE}{'─' * right_width}{bcolors.ENDC}"
     )
 
 def parse_selector_part(selector_part):
@@ -596,17 +597,17 @@ def list_episode_items(episode_items):
     for series_index, series_label in enumerate(group_labels):
         series_items = grouped_items[series_label]
         if series_index > 0:
-            print(f"{bcolors.GRAY}|{bcolors.ENDC}")
+            print(f"{bcolors.GRAY}│{bcolors.ENDC}")
 
         group_is_last = series_index == len(group_labels) - 1
-        group_branch = "`-" if group_is_last else "|-"
-        group_child_prefix = "   " if group_is_last else "|  "
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
         print(f"{bcolors.GRAY}{group_branch} {series_label}: {bcolors.ENDC}{len(series_items)} episodes")
 
         for episode_index, item in enumerate(series_items):
             is_last = episode_index == len(series_items) - 1
-            branch = "`-" if is_last else "|-"
-            url_branch = "  " if is_last else "| "
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
             episode_number, episode_title = episode_tree_label(item["episode"])
 
             print(f"{bcolors.GRAY}{group_child_prefix}{branch} {episode_number}. {bcolors.ENDC}{episode_title}")
@@ -779,9 +780,9 @@ def get_decryption_key(pssh: str, lic_url: str, print_keys=True):
         if session_id is not None:
             cdm.close(session_id)
 
-def get_streams(mpd, keys, show_title, full_title, auto_download=False, interactive=False):
+def get_streams(mpd, keys, show_title, full_title, auto_download=False, interactive=False, quality=None):
     keys_str = ' '.join([f'--key {key}' for key in keys])
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     command = f'N_m3u8DL-RE "{mpd}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{full_title}" --save-dir "{DOWNLOAD_DIR}" {keys_str}'
     command = append_downloader_proxy(command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy_command(command)}")
@@ -897,7 +898,7 @@ def info(url):
     print_episode_metadata(playback["episode"])
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{save_name}.mkv")
 
-def process_video(url, auto_download=False, interactive=False):
+def process_video(url, auto_download=False, interactive=False, quality=None):
     spinner = Spinner()
     spinner.start()
     try:
@@ -908,10 +909,11 @@ def process_video(url, auto_download=False, interactive=False):
     spinner.stop()
 
     print_playback_details(playback)
+    playback["save_name"] = apply_quality_to_filename(playback["save_name"], quality)
     # Get the download streams
-    get_streams(playback["manifest_url"], playback["keys"], "", playback["save_name"], auto_download=auto_download, interactive=interactive)
+    get_streams(playback["manifest_url"], playback["keys"], "", playback["save_name"], auto_download=auto_download, interactive=interactive, quality=quality)
 
-def download_selected_episodes(series_url, selector):
+def download_selected_episodes(series_url, selector, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -926,9 +928,9 @@ def download_selected_episodes(series_url, selector):
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item["episode"])
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item["url"], auto_download=True)
+        process_video(item["url"], auto_download=True, quality=quality)
 
-def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for My5 (Widevine)."""
     if not video_url:
         raise ValueError("No My5 URL provided.")
@@ -967,14 +969,14 @@ def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="aut
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a My5 series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            download_selected_episodes(video_url, download_selector)
+            download_selected_episodes(video_url, download_selector, quality)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
         try:
-            process_video(video_url, interactive=(mode == "interactive"))
+            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return

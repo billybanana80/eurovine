@@ -30,6 +30,7 @@ import requests
 import urllib3
 import icons
 from colors import bcolors
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url, mask_proxy_command
 try:
     from beaupy.spinners import Spinner
@@ -682,9 +683,9 @@ def print_series_rule(service_label, series_title):
     left_width = max((rule_width - len(title)) // 2, 0)
     right_width = max(rule_width - len(title) - left_width, 0)
     print(
-        f"{bcolors.LIGHTBLUE}{'-' * left_width}{bcolors.ENDC} "
+        f"{bcolors.LIGHTBLUE}{'─' * left_width}{bcolors.ENDC} "
         f"{bcolors.LIGHTBLUE}{service_label}: {bcolors.ENDC}{bcolors.WHITE}{series_title}{bcolors.ENDC} "
-        f"{bcolors.LIGHTBLUE}{'-' * right_width}{bcolors.ENDC}"
+        f"{bcolors.LIGHTBLUE}{'─' * right_width}{bcolors.ENDC}"
     )
 
 
@@ -781,17 +782,17 @@ def list_episode_items(episode_items):
     for series_index, series_label in enumerate(group_labels):
         series_items = grouped_items[series_label]
         if series_index > 0:
-            print(f"{bcolors.GRAY}|{bcolors.ENDC}")
+            print(f"{bcolors.GRAY}│{bcolors.ENDC}")
 
         group_is_last = series_index == len(group_labels) - 1
-        group_branch = "`-" if group_is_last else "+-"
-        group_child_prefix = "   " if group_is_last else "|  "
+        group_branch = "└─" if group_is_last else "├─"
+        group_child_prefix = "   " if group_is_last else "│  "
         print(f"{bcolors.GRAY}{group_branch} {series_label}: {bcolors.ENDC}{len(series_items)} episodes")
 
         for episode_index, item in enumerate(series_items):
             is_last = episode_index == len(series_items) - 1
-            branch = "`-" if is_last else "+-"
-            url_branch = "  " if is_last else "| "
+            branch = "└─" if is_last else "├─"
+            url_branch = "  " if is_last else "│ "
             number_label, title = episode_tree_label(item)
             print(f"{bcolors.GRAY}{group_child_prefix}{branch} {number_label}. {bcolors.ENDC}{title}")
             print(f"{bcolors.GRAY}{group_child_prefix}{url_branch} {bcolors.ENDC}{bcolors.LIGHTBLUE}{item.url}{bcolors.ENDC}")
@@ -1407,8 +1408,8 @@ def format_filename(metadata: Metadata, resolution: str) -> str:
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback: PlaybackInfo, filename: str, keys: Optional[list[str]] = None, interactive: bool = False) -> str:
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle none "
+def build_download_command(playback: PlaybackInfo, filename: str, keys: Optional[list[str]] = None, interactive: bool = False, quality=None) -> str:
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle none "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1778,7 +1779,10 @@ def save_translated_subtitles(playback: PlaybackInfo, filename: str):
     return output_path
 
 
-def maybe_save_translated_subtitles(playback: PlaybackInfo, filename: str):
+def maybe_save_translated_subtitles(playback: PlaybackInfo, filename: str, auto_download: bool = False):
+    if auto_download:
+        return save_translated_subtitles(playback, filename)
+
     try:
         user_input = input("Do you wish to save translated English subtitles? Y or N: ").strip().lower()
     except EOFError:
@@ -1846,7 +1850,7 @@ def maybe_download(command: str, auto_download: bool = False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def resolve_video_details(video_url: str, interactive: bool = False) -> dict[str, Any]:
+def resolve_video_details(video_url: str, interactive: bool = False, quality=None) -> dict[str, Any]:
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
     playback = get_playback_info(video_url, metadata)
@@ -1866,7 +1870,8 @@ def resolve_video_details(video_url: str, interactive: bool = False) -> dict[str
     streams, manifest_label = parse_manifest_streams(manifest_text)
     resolution = f"{max_height_from_streams(streams, default=str(asset_height(playback.layout_asset or {}) or 1080))}p"
     filename = format_filename(metadata, resolution)
-    command = build_download_command(playback, filename, keys, interactive=interactive)
+    filename = apply_quality_to_filename(filename, quality)
+    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality)
     return {
         "metadata": metadata,
         "playback": playback,
@@ -1879,11 +1884,11 @@ def resolve_video_details(video_url: str, interactive: bool = False) -> dict[str
     }
 
 
-def resolve_video_details_with_spinner(video_url: str, interactive: bool = False) -> dict[str, Any]:
+def resolve_video_details_with_spinner(video_url: str, interactive: bool = False, quality=None) -> dict[str, Any]:
     spinner = Spinner()
     spinner.start()
     try:
-        details = resolve_video_details(video_url, interactive=interactive)
+        details = resolve_video_details(video_url, interactive=interactive, quality=quality)
     except Exception:
         spinner.stop()
         raise
@@ -1897,9 +1902,9 @@ def print_resolved_title(metadata: Metadata):
         print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}{metadata.title}{bcolors.ENDC} {episode_str} - {metadata.episode_title or ''}".rstrip())
 
 
-def process_video(video_url: str, auto_download: bool = False, info: bool = False, interactive: bool = False):
+def process_video(video_url: str, auto_download: bool = False, info: bool = False, interactive: bool = False, quality=None):
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    details = resolve_video_details_with_spinner(video_url, interactive=interactive)
+    details = resolve_video_details_with_spinner(video_url, interactive=interactive, quality=quality)
     metadata = details["metadata"]
     playback = details["playback"]
     keys = details["keys"]
@@ -1914,7 +1919,7 @@ def process_video(video_url: str, auto_download: bool = False, info: bool = Fals
     print(f"{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{filename}.mkv")
     if info:
         return
-    maybe_save_translated_subtitles(playback, filename)
+    maybe_save_translated_subtitles(playback, filename, auto_download=auto_download)
     maybe_download(command, auto_download=auto_download)
 
 
@@ -1934,7 +1939,7 @@ def info(video_url: str):
     )
 
 
-def download_selected_episodes(series_url: str, selector: str):
+def download_selected_episodes(series_url: str, selector: str, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -1947,7 +1952,7 @@ def download_selected_episodes(series_url: str, selector: str):
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item.url, auto_download=True)
+        process_video(item.url, auto_download=True, quality=quality)
 
 
 def export_episode_urls(episode_items):
@@ -1963,7 +1968,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, prd_device_path="", m6_credentials=None, m6_config=None, mode="auto", export_list=False, download_selector=None):
+def main(video_url, downloads_path, wvd_device_path, prd_device_path="", m6_credentials=None, m6_config=None, mode="auto", export_list=False, download_selector=None, quality=None):
     """Eurovine entry point for M6+ (Widevine/PlayReady)."""
     try:
         if not video_url:
@@ -1994,7 +1999,7 @@ def main(video_url, downloads_path, wvd_device_path, prd_device_path="", m6_cred
             if is_episode_url(video_url):
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an {SERVICE_LABEL} series URL, not an episode URL.{bcolors.ENDC}")
                 return
-            download_selected_episodes(video_url, download_selector)
+            download_selected_episodes(video_url, download_selector, quality)
             return
 
         if export_list:
@@ -2009,7 +2014,7 @@ def main(video_url, downloads_path, wvd_device_path, prd_device_path="", m6_cred
         if playable_url:
             if canonical_url(video_url) != playable_url:
                 print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Resolved playable URL: {bcolors.ENDC}{playable_url}")
-            process_video(playable_url, interactive=(mode == "interactive"))
+            process_video(playable_url, interactive=(mode == "interactive"), quality=quality)
             return
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
     except Exception as exc:

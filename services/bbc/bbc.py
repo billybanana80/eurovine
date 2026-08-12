@@ -14,6 +14,7 @@ from beaupy.spinners import Spinner
 import icons
 from colors import bcolors
 from pathlib import Path
+from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -798,13 +799,15 @@ def extract_info(video_url, ultra=False):
     return manifest_url, formatted_file_name, metadata
 
 # Function to format and display download command
-def build_download_command(m3u8_url, formatted_file_name, downloads_path, interactive=False):
-    selectors = "" if interactive else "--select-video best --select-audio best --select-subtitle all "
+def build_download_command(m3u8_url, formatted_file_name, downloads_path, interactive=False, quality=None):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
     command = f'N_m3u8DL-RE "{m3u8_url}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-dir "{downloads_path}" --save-name "{formatted_file_name}" '
     return append_downloader_proxy(command)
 
-def display_download_command(m3u8_url, formatted_file_name, downloads_path, auto_download=False, ultra=False, interactive=False):
-    download_command = build_download_command(m3u8_url, formatted_file_name, downloads_path, interactive=interactive)
+def display_download_command(m3u8_url, formatted_file_name, downloads_path, auto_download=False, ultra=False, interactive=False, quality=None):
+    quality = None if ultra else quality
+    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
+    download_command = build_download_command(m3u8_url, formatted_file_name, downloads_path, interactive=interactive, quality=quality)
     manifest_label = 'MPD URL' if ultra else 'M3U8 URL'
     print(f"{bcolors.LIGHTBLUE}{manifest_label}: {bcolors.ENDC}{m3u8_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
@@ -822,7 +825,7 @@ def display_download_command(m3u8_url, formatted_file_name, downloads_path, auto
     else:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
-def process_video(video_url, downloads_path, auto_download=False, info=False, ultra=False, interactive=False):
+def process_video(video_url, downloads_path, auto_download=False, info=False, ultra=False, interactive=False, quality=None):
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
     spinner = Spinner()
     spinner.start()
@@ -846,10 +849,11 @@ def process_video(video_url, downloads_path, auto_download=False, info=False, ul
         auto_download=auto_download,
         ultra=ultra,
         interactive=interactive,
+        quality=quality,
     )
     return True
 
-def download_selected_episodes(series_url, selector, downloads_path, ultra=False):
+def download_selected_episodes(series_url, selector, downloads_path, ultra=False, quality=None):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
@@ -864,12 +868,12 @@ def download_selected_episodes(series_url, selector, downloads_path, ultra=False
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item['episode'])
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item['url'], downloads_path, auto_download=True, ultra=ultra)
+        process_video(item['url'], downloads_path, auto_download=True, ultra=ultra, quality=quality)
 
 def is_episode_url(url):
     return extract_video_id(url) is not None
 
-def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode="auto", export_list=False, download_selector=None, ultra=False):
+def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode="auto", export_list=False, download_selector=None, ultra=False, quality=None):
     """Eurovine entry point for BBC iPlayer; UHD requires a configured certificate."""
     if not video_url:
         raise ValueError("No BBC iPlayer URL provided.")
@@ -906,7 +910,7 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
         try:
             if ultra:
                 get_bbc_certificate_path()
-            download_selected_episodes(video_url, download_selector, downloads_path, ultra=ultra)
+            download_selected_episodes(video_url, download_selector, downloads_path, ultra=ultra, quality=None if ultra else quality)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
@@ -927,7 +931,7 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
         try:
             if ultra:
                 get_bbc_certificate_path()
-            process_video(video_url, downloads_path, ultra=ultra, interactive=(mode == "interactive"))
+            process_video(video_url, downloads_path, ultra=ultra, interactive=(mode == "interactive"), quality=None if ultra else quality)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
