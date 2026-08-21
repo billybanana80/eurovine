@@ -126,7 +126,3 @@ def main(config=None):
     except (OSError, ValueError, requests.RequestException, yaml.YAMLError) as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Could not retrieve BBC UHD catalogue: {exc}{bcolors.ENDC}")
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    main()

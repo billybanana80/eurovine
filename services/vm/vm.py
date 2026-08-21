@@ -17,6 +17,7 @@ import shutil
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url
@@ -819,9 +820,13 @@ def format_filename(metadata, resolution):
         return "Unknown.Show.S01E01.1080p.VirginMedia.WEB-DL.AAC2.0.H.264.mkv"
 
 # Step 8: Generate the download command
-def generate_download_command(manifest_url, keys, filename, save_path, interactive=False, quality=None):
+def subtitle_selector(save_subs=False):
+    return "--select-subtitle all" if save_subs else "--drop-subtitle all"
+
+
+def generate_download_command(manifest_url, keys, filename, save_path, interactive=False, quality=None, save_subs=False):
     keys_str = ' '.join([f'--key {key}' for key in keys])
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best {subtitle_selector(save_subs)} "
     command = f'N_m3u8DL-RE "{manifest_url}" --save-name "{filename}" --save-dir "{save_path}" {selectors}-mt -M format=mkv {keys_str}'
     if VM_PROXY:
         command += f' --custom-proxy "{VM_PROXY}"'
@@ -868,7 +873,23 @@ def max_resolution_from_streams(streams):
     return max(heights) if heights else "Unknown"
 
 
-def resolve_playback(video_url, interactive=False, quality=None):
+def stream_error_message(stream_response):
+    if not isinstance(stream_response, dict):
+        return ""
+
+    error = stream_response.get("error") or stream_response.get("message") or stream_response.get("errorMessage")
+    error_type = stream_response.get("error_type") or stream_response.get("errorType") or stream_response.get("code")
+
+    if error and error_type:
+        return f" Virgin Media returned: {error} ({error_type})."
+    if error:
+        return f" Virgin Media returned: {error}."
+    if error_type:
+        return f" Virgin Media returned error type: {error_type}."
+    return ""
+
+
+def resolve_playback(video_url, interactive=False, quality=None, save_subs=False):
     video_id = get_video_id_from_url(video_url)
     stream_details = get_stream_details(video_id, video_url)
     response = stream_details.get("response", {})
@@ -877,9 +898,9 @@ def resolve_playback(video_url, interactive=False, quality=None):
     manifest_url = widevine.get("stream")
     license_url = widevine.get("licenseAcquisitionUrl")
     if not manifest_url:
-        raise ValueError("Virgin Media stream response did not contain a Widevine manifest URL.")
+        raise ValueError("Virgin Media stream response did not contain a Widevine manifest URL." + stream_error_message(response))
     if not license_url:
-        raise ValueError("Virgin Media stream response did not contain a Widevine license URL.")
+        raise ValueError("Virgin Media stream response did not contain a Widevine license URL." + stream_error_message(response))
 
     metadata = response.get("metadata", {}).get("metadata", {})
     manifest_content = fetch_manifest(manifest_url)
@@ -889,7 +910,7 @@ def resolve_playback(video_url, interactive=False, quality=None):
     resolution = max_resolution_from_streams(streams)
     filename = format_filename(metadata, resolution)
     filename = apply_quality_to_filename(filename, quality)
-    download_command = generate_download_command(manifest_url, keys, filename, SAVE_PATH, interactive=interactive, quality=quality)
+    download_command = generate_download_command(manifest_url, keys, filename, SAVE_PATH, interactive=interactive, quality=quality, save_subs=save_subs)
 
     return {
         "video_id": video_id,
@@ -931,12 +952,12 @@ def info(video_url):
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{resolved['filename']}")
 
 
-def process_video(video_url, auto_download=False, interactive=False, quality=None):
+def process_video(video_url, auto_download=False, interactive=False, quality=None, save_subs=False):
     try:
         spinner = Spinner()
         spinner.start()
         try:
-            resolved = resolve_playback(video_url, interactive=interactive, quality=quality)
+            resolved = resolve_playback(video_url, interactive=interactive, quality=quality, save_subs=save_subs)
         except Exception:
             spinner.stop()
             raise
@@ -1010,22 +1031,21 @@ def process_video(video_url, auto_download=False, interactive=False, quality=Non
         return False
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != 'y':
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_subs=save_subs)
 
 
 def safe_filename(value):
@@ -1047,7 +1067,7 @@ def export_episode_urls(series_url, episode_items=None):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported {len(episode_items)} Virgin Media episode URLs to:{bcolors.ENDC} {output_path}")
 
 
-def eurovine_main(video_url, downloads_path, wvd_device_path, device_id=None, mode="auto", export_list=False, download_selector=None, quality=None):
+def eurovine_main(video_url, downloads_path, wvd_device_path, device_id=None, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     configure_service(downloads_path, wvd_device_path, device_id)
     video_url = str(video_url or "").strip()
 
@@ -1093,22 +1113,16 @@ def eurovine_main(video_url, downloads_path, wvd_device_path, device_id=None, mo
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a Virgin Media series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
-        process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+        process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use -l to list episodes, -x to export episode URLs, or -d SELECTOR to download selected episodes.{bcolors.ENDC}")
 
 
 main = eurovine_main
-
-
-if __name__ == "__main__":
-    print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Run Virgin Media through eurovine.py from the Eurovine root folder.{bcolors.ENDC}")
-
-

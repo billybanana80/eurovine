@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 from selectolax.lexbor import LexborHTMLParser
 from pathlib import Path
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from beaupy.spinners import Spinner
 from quality_utils import apply_quality_to_filename, video_selector
@@ -781,17 +782,21 @@ def highest_stream_resolution(streams, default="1080p"):
             heights.append(int(match.group(1)))
     return f"{max(heights)}p" if heights else default
 
-def build_drm_download_command(manifest, save_name, keys, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def subtitle_selector(save_subs=False):
+    return "--select-subtitle all" if save_subs else "--drop-subtitle all"
+
+def build_drm_download_command(manifest, save_name, keys, interactive=False, quality=None, save_subs=False):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best {subtitle_selector(save_subs)} "
     command = f'N_m3u8DL-RE "{manifest}" {selectors}-mt -M format=mkv --save-name "{save_name}" --save-dir "{SAVE_PATH}" --key ' + ' --key '.join(keys)
     return append_downloader_proxy(command)
 
-def build_hls_download_command(manifest, save_name, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
-    command = f'N_m3u8DL-RE "{manifest}" {selectors}-mt --save-name "{save_name}" --save-dir "{SAVE_PATH}" '
+def build_hls_download_command(manifest, save_name, interactive=False, quality=None, save_subs=False):
+    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best {subtitle_selector(save_subs)} "
+    mux_options = "-M format=mkv " if save_subs else ""
+    command = f'N_m3u8DL-RE "{manifest}" {selectors}-mt {mux_options}--save-name "{save_name}" --save-dir "{SAVE_PATH}" '
     return append_downloader_proxy(command)
 
-def resolve_playback_info(video_url, include_manifest=True, include_keys=True, interactive=False, quality=None):
+def resolve_playback_info(video_url, include_manifest=True, include_keys=True, interactive=False, quality=None, save_subs=False):
     episode, video_id, seriesguid, guid, drm = get_episode_details_from_url(video_url)
     playback = fetch_brightcove_playback(video_id, drm)
     sources = playback.get('sources') or []
@@ -820,7 +825,7 @@ def resolve_playback_info(video_url, include_manifest=True, include_keys=True, i
             "keys": keys,
             "streams": streams,
             "save_name": save_name,
-            "download_command": build_drm_download_command(manifest, save_name, keys, interactive=interactive, quality=quality),
+            "download_command": build_drm_download_command(manifest, save_name, keys, interactive=interactive, quality=quality, save_subs=save_subs),
             "drm": True,
         }
 
@@ -844,7 +849,7 @@ def resolve_playback_info(video_url, include_manifest=True, include_keys=True, i
         "keys": [],
         "streams": streams,
         "save_name": save_name,
-        "download_command": build_hls_download_command(manifest, save_name, interactive=interactive, quality=quality),
+        "download_command": build_hls_download_command(manifest, save_name, interactive=interactive, quality=quality, save_subs=save_subs),
         "drm": False,
     }
 
@@ -870,7 +875,7 @@ def print_info_mode(video_url):
     print(f"\n{bcolors.LIGHTBLUE}Suggested filename: {bcolors.ENDC}{resolved['save_name']}.mkv")
 
 # Function to handle DRM-protected videos
-def handle_drm(video_id, auto_download=False, quality=None):
+def handle_drm(video_id, auto_download=False, quality=None, save_subs=False):
     headers = {
         'Accept': f'application/json;pk={BRIGHTCOVE_KEY_DRM}',
     }
@@ -892,7 +897,7 @@ def handle_drm(video_id, auto_download=False, quality=None):
     save_name = f"{videoname}.{resolution}.STV.WEB-DL.AAC2.0.H.264"
     save_name = apply_quality_to_filename(save_name, quality)
     
-    selectors = f"{video_selector(quality)} --select-audio best --select-subtitle all "
+    selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector(save_subs)} "
     download_command = f"""N_m3u8DL-RE "{manifest}" {selectors}-mt -M format=mkv --save-name "{save_name}" --save-dir "{SAVE_PATH}" --key """ + ' --key '.join(keys)
     if STV_PROXY:
         download_command += f' --custom-proxy "{STV_PROXY}"'
@@ -915,7 +920,7 @@ def handle_drm(video_id, auto_download=False, quality=None):
             subprocess.run(download_command, shell=True)    
 
 # Function to handle non-DRM videos
-def handle_no_drm(video_id, auto_download=False, quality=None):
+def handle_no_drm(video_id, auto_download=False, quality=None, save_subs=False):
     headers = {
         'Accept': f'application/json;pk={BRIGHTCOVE_KEY}',
     }
@@ -933,8 +938,9 @@ def handle_no_drm(video_id, auto_download=False, quality=None):
     save_name = f"{videoname}.{resolution}.STV.WEB-DL.AAC2.0.H.264"
     save_name = apply_quality_to_filename(save_name, quality)
     
-    selectors = f"{video_selector(quality)} --select-audio best --select-subtitle all "
-    download_command = f"""N_m3u8DL-RE "{manifest}" {selectors}-mt --save-name "{save_name}" --save-dir "{SAVE_PATH}" """
+    selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector(save_subs)} "
+    mux_options = "-M format=mkv " if save_subs else ""
+    download_command = f"""N_m3u8DL-RE "{manifest}" {selectors}-mt {mux_options}--save-name "{save_name}" --save-dir "{SAVE_PATH}" """
     if STV_PROXY:
         download_command += f' --custom-proxy "{STV_PROXY}"'
     
@@ -952,8 +958,8 @@ def handle_no_drm(video_id, auto_download=False, quality=None):
             subprocess.run(download_command, shell=True)
 
 # Main function to determine if DRM or non-DRM and proceed accordingly
-def get_download_command(video_url, auto_download=False, interactive=False, quality=None):
-    resolved = run_with_spinner("Resolving STV playback information...", lambda: resolve_playback_info(video_url, interactive=interactive, quality=quality))
+def get_download_command(video_url, auto_download=False, interactive=False, quality=None, save_subs=False):
+    resolved = run_with_spinner("Resolving STV playback information...", lambda: resolve_playback_info(video_url, interactive=interactive, quality=quality, save_subs=save_subs))
 
     if resolved["drm"]:
         print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{resolved['manifest']}")
@@ -975,24 +981,23 @@ def get_download_command(video_url, auto_download=False, interactive=False, qual
     if user_input == 'y':
         subprocess.run(resolved["download_command"], shell=True)
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != 'y':
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        get_download_command(item['url'], auto_download=True, quality=quality)
+        get_download_command(item['url'], auto_download=True, quality=quality, save_subs=save_subs)
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     """Eurovine entry point for STV (Widevine where applicable)."""
     if not video_url:
         raise ValueError("No STV URL provided.")
@@ -1029,19 +1034,16 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an STV summary URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
         except (requests.RequestException, ValueError, ET.ParseError, KeyError) as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
         try:
-            get_download_command(video_url, interactive=(mode == "interactive"), quality=quality)
+            get_download_command(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
         except (requests.RequestException, ValueError, ET.ParseError, KeyError) as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
-
-if __name__ == "__main__":
-    print("Run STV through eurovine.py so it can use the shared Eurovine configuration.")

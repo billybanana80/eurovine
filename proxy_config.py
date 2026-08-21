@@ -7,16 +7,21 @@ from icons import ICON_PROXY
 
 REGION_BY_SERVICE = {
     "all4": "UK",
+    "ard": "DE",
     "bbc": "UK",
     "blaze": "UK",
     "drtv": "DK",
     "frtv": "FR",
     "itvx": "UK",    
     "m6": "FR",
+    "mse": "ES",
+    "msi": "IT",
     "my5": "UK",
     "npo": "NL",   
     "nrk": "NO",
+    "rai": "IT",
     "rte": "IE",
+    "rtve": "ES",
     "ruv": "IS",
     "stv": "UK",
     "svt": "SE",
@@ -24,21 +29,27 @@ REGION_BY_SERVICE = {
     "tv4": "SE",
     "u": "UK",
     "vm": "IE",
+    "zdf": "DE",
 }
 
 DEFAULT_PROVIDER_ORDER = ("surfsharkvpn", "nordvpn")
 DEFAULT_SERVICE_PROXY_ENABLED = {
     "all4": True,
+    "ard": True,
     "bbc": True,
     "blaze": True,
     "drtv": True,
     "frtv": True,
     "itvx": True,    
     "m6": True,
+    "mse": True,
+    "msi": True,
     "my5": True,
     "npo": True,
     "nrk": True,
+    "rai": True,
     "rte": True,
+    "rtve": True,
     "ruv": True,
     "stv": True,
     "svt": True,
@@ -46,6 +57,7 @@ DEFAULT_SERVICE_PROXY_ENABLED = {
     "tv4": True,
     "u": True,
     "vm": True,
+    "zdf": True,
 }
 PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "EUROVINE_PROXY_URL")
 
@@ -131,3 +143,5 @@ def configure_proxy(config, service_key, printer=print):
 
     printer(f"{bcolors.ORANGE}{ICON_PROXY} Proxy:{bcolors.ENDC} {proxy['provider']} {proxy['region']} {mask_proxy(proxy_url)}")
     return proxy
+
+

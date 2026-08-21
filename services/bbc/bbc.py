@@ -12,6 +12,7 @@ from lxml import etree, html
 from requests.adapters import HTTPAdapter
 from beaupy.spinners import Spinner
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from pathlib import Path
 from quality_utils import apply_quality_to_filename, video_selector
@@ -325,6 +326,197 @@ def get_uhd_manifest_url(media_selector_data):
     return None, None
 
 
+def caption_priority(connection):
+    try:
+        return int(connection.get('priority', 99))
+    except (TypeError, ValueError):
+        return 99
+
+
+def get_ttml_caption_info(media_selector_data, vpid=None):
+    caption_entries = []
+    for media in media_selector_data.get('media', []):
+        if media.get('kind') != 'captions':
+            continue
+
+        media_type = media.get('type') or media.get('encoding') or 'TTML'
+        language = media.get('language') or media.get('lang') or 'en'
+        for connection in media.get('connection', []):
+            href = connection.get('href')
+            if not href:
+                continue
+            caption_entries.append({
+                'url': href,
+                'type': media_type,
+                'language': language,
+                'vpid': vpid,
+                'priority': caption_priority(connection),
+            })
+
+    if not caption_entries:
+        return None
+
+    caption_entries.sort(key=lambda item: (0 if item['url'].startswith('https://') else 1, item['priority']))
+    return caption_entries[0]
+
+
+def get_caption_info_for_version(vpid, media_selector_data=None):
+    if media_selector_data:
+        caption_info = get_ttml_caption_info(media_selector_data, vpid=vpid)
+        if caption_info:
+            return caption_info
+
+    standard_media_selector_data = get_media_selector_data(vpid, ultra=False, show_error=False)
+    if standard_media_selector_data:
+        return get_ttml_caption_info(standard_media_selector_data, vpid=vpid)
+
+    return None
+
+
+def parse_ttml_time(value):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+    if not value:
+        return None
+
+    unit_match = re.fullmatch(r'([\d.]+)(h|m|s|ms)', value)
+    if unit_match:
+        amount = float(unit_match.group(1))
+        unit = unit_match.group(2)
+        if unit == 'h':
+            return amount * 3600
+        if unit == 'm':
+            return amount * 60
+        if unit == 'ms':
+            return amount / 1000
+        return amount
+
+    parts = value.split(':')
+    try:
+        if len(parts) == 4:
+            hours, minutes, seconds, frames = parts
+            return (int(hours) * 3600) + (int(minutes) * 60) + int(seconds) + (int(frames) / 25)
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+            return (int(hours) * 3600) + (int(minutes) * 60) + float(seconds)
+        if len(parts) == 2:
+            minutes, seconds = parts
+            return (int(minutes) * 60) + float(seconds)
+    except ValueError:
+        return None
+
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def format_srt_time(seconds):
+    if seconds is None:
+        seconds = 0
+    milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(milliseconds, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+
+def ttml_local_name(node):
+    return etree.QName(node).localname.lower()
+
+
+def ttml_text(node):
+    text_parts = []
+    if node.text:
+        text_parts.append(node.text)
+
+    for child in node:
+        if ttml_local_name(child) == 'br':
+            text_parts.append('\n')
+        else:
+            text_parts.append(ttml_text(child))
+        if child.tail:
+            text_parts.append(child.tail)
+
+    lines = [' '.join(line.split()) for line in ''.join(text_parts).splitlines()]
+    return '\n'.join(line for line in lines if line)
+
+
+def parse_ttml_subtitles(ttml_content):
+    root = etree.fromstring(ttml_content.encode('utf-8') if isinstance(ttml_content, str) else ttml_content)
+    cues = []
+
+    for paragraph in root.xpath('//*[local-name()="p"]'):
+        begin = parse_ttml_time(paragraph.get('begin') or paragraph.get('start'))
+        end = parse_ttml_time(paragraph.get('end'))
+        duration = parse_ttml_time(paragraph.get('dur'))
+        if end is None and begin is not None and duration is not None:
+            end = begin + duration
+
+        text = ttml_text(paragraph)
+        if begin is None or end is None or not text:
+            continue
+        cues.append((begin, end, text))
+
+    return cues
+
+
+def subtitle_language_suffix(language):
+    if not language:
+        return 'en'
+
+    language = str(language).lower().replace('_', '-')
+    if language.startswith('en'):
+        return 'en'
+    return language.split('-', 1)[0] or 'en'
+
+
+def fetch_caption_ttml(caption_info):
+    response = session.get(caption_info['url'], timeout=30)
+    response.raise_for_status()
+    return response.text
+
+
+def save_bbc_sidecar_subtitles(caption_info, downloads_path, formatted_file_name):
+    if not caption_info:
+        print(f"{icons.ICON_WARNING} {bcolors.WARNING}BBC sidecar subtitles were requested, but no external TTML captions were found.{bcolors.ENDC}")
+        return None
+
+    ttml_content = fetch_caption_ttml(caption_info)
+    cues = parse_ttml_subtitles(ttml_content)
+    if not cues:
+        print(f"{icons.ICON_WARNING} {bcolors.WARNING}BBC sidecar subtitles were requested, but the TTML captions contained no usable cues.{bcolors.ENDC}")
+        return None
+
+    suffix = subtitle_language_suffix(caption_info.get('language'))
+    output_path = Path(downloads_path) / f"{formatted_file_name}.{suffix}.srt"
+    with output_path.open('w', encoding='utf-8', newline='\n') as subtitle_file:
+        for index, (begin, end, text) in enumerate(cues, start=1):
+            subtitle_file.write(f"{index}\n")
+            subtitle_file.write(f"{format_srt_time(begin)} --> {format_srt_time(end)}\n")
+            subtitle_file.write(f"{text}\n\n")
+
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} External subtitles saved: {bcolors.ENDC}{output_path}")
+    return output_path
+
+
+def bbc_external_subtitle_stream(caption_info):
+    if not caption_info:
+        return None
+
+    return {
+        'type': 'subtitle',
+        'resolution': '-',
+        'bandwidth': 0,
+        'codecs': 'ttml',
+        'language': caption_info.get('language') or '-',
+        'channels': '-',
+        'external': True,
+    }
+
+
 def get_available_version_ids(video_id, metadata):
     version_ids = []
     playlist_data = get_playlist_data(video_id) or {}
@@ -345,21 +537,69 @@ def get_available_version_ids(video_id, metadata):
 
     return version_ids
 
-# Function to extract series and episode information from subtitle
-def extract_series_episode_from_subtitle(subtitle):
-    match = re.search(r'Series (\d+):?\s?(Episode\s)?(\d+)?', subtitle)
+ROMAN_NUMERAL_VALUES = {
+    "I": 1,
+    "V": 5,
+    "X": 10,
+    "L": 50,
+    "C": 100,
+    "D": 500,
+    "M": 1000,
+}
+
+
+def roman_to_int(value):
+    value = clean_info_value(value).upper()
+    if not value or not re.fullmatch(r"[IVXLCDM]+", value):
+        return None
+
+    total = 0
+    previous = 0
+    for character in reversed(value):
+        number = ROMAN_NUMERAL_VALUES[character]
+        if number < previous:
+            total -= number
+        else:
+            total += number
+            previous = number
+    return total if total > 0 else None
+
+
+def parse_bbc_episode_subtitle(subtitle):
+    subtitle = clean_info_value(subtitle)
+    if not subtitle:
+        return None, None, ""
+
+    match = re.match(r"^Series\s+(\d+)\s*:?\s*(?:Episode\s*)?(\d+)?(?:[.:]\s*)?(.*)$", subtitle, flags=re.IGNORECASE)
     if match:
         series = match.group(1).zfill(2)
-        episode = match.group(3).zfill(2) if match.group(3) else None
-        return series, episode
-    return None, None
+        episode = match.group(2).zfill(2) if match.group(2) else None
+        episode_title = clean_info_value(match.group(3))
+        return series, episode, episode_title
+
+    match = re.match(r"^([IVXLCDM]+)\s*:\s*(\d+)(?:[.:]\s*)?(.*)$", subtitle, flags=re.IGNORECASE)
+    if match:
+        series_number = roman_to_int(match.group(1))
+        if series_number:
+            series = str(series_number).zfill(2)
+            episode = match.group(2).zfill(2)
+            episode_title = clean_info_value(match.group(3))
+            return series, episode, episode_title
+
+    return None, None, subtitle
+
+
+# Function to extract series and episode information from subtitle
+def extract_series_episode_from_subtitle(subtitle):
+    series, episode, _ = parse_bbc_episode_subtitle(subtitle)
+    return series, episode
 
 def format_episode_label(episode):
     title = episode.get('title', 'Unknown')
     subtitle = episode.get('subtitle', '')
-    series_info, episode_info = extract_series_episode_from_subtitle(subtitle)
+    series_info, episode_info, episode_title = parse_bbc_episode_subtitle(subtitle)
     season_episode = f"S{series_info}E{episode_info}" if series_info and episode_info else ""
-    label_parts = [part for part in [title, season_episode, subtitle] if part]
+    label_parts = [part for part in [title, season_episode, episode_title or subtitle] if part]
     return " - ".join(label_parts)
 
 def episode_sort_key(item):
@@ -373,9 +613,8 @@ def episode_sort_key(item):
 
 def episode_tree_label(episode):
     subtitle = episode.get('subtitle', '')
-    series_info, episode_info = extract_series_episode_from_subtitle(subtitle)
+    series_info, episode_info, episode_title = parse_bbc_episode_subtitle(subtitle)
     if series_info and episode_info:
-        episode_title = re.sub(r'^Series\s+\d+:?\s*', '', subtitle).strip()
         return episode_info, episode_title or subtitle
     if series_info:
         return "-", subtitle
@@ -623,9 +862,17 @@ def format_info_date(value):
 def print_bbc_metadata(metadata):
     episode = get_episode_from_metadata(metadata) or {}
     synopses = episode.get('synopses') or {}
+    subtitle = clean_info_value(episode.get('subtitle'))
+    series_info, episode_info, episode_title = parse_bbc_episode_subtitle(subtitle)
+    episode_label = subtitle
+    if series_info and episode_info:
+        episode_label = f"S{series_info}E{episode_info}" + (f" - {episode_title}" if episode_title else "")
+    elif series_info:
+        episode_label = f"S{series_info}" + (f" - {subtitle}" if subtitle else "")
+
     rows = [
         ('Show', clean_info_value(episode.get('title'))),
-        ('Episode', clean_info_value(episode.get('subtitle'))),
+        ('Episode', episode_label),
         ('Date Aired', format_info_date(episode.get('release_date_time'))),
         ('Description', clean_info_value(
             synopses.get('large') or synopses.get('medium') or synopses.get('small')
@@ -661,6 +908,7 @@ def get_hls_streams(manifest_content):
             'bandwidth': int(bandwidth_match.group(1)) if bandwidth_match else 0,
             'codecs': codecs_match.group(1) if codecs_match else '',
             'language': '',
+            'channels': '',
         }
 
     return sorted(streams, key=lambda item: item['bandwidth'], reverse=True)
@@ -691,6 +939,7 @@ def get_dash_streams(manifest_content):
             'bandwidth': int(bandwidth) if str(bandwidth or '').isdigit() else 0,
             'codecs': representation.get('codecs') or adaptation.get('codecs', ''),
             'language': adaptation.get('lang', ''),
+            'channels': adaptation.get('audioChannelConfiguration') or '',
         })
 
     return sorted(streams, key=lambda item: (item['type'] != 'video', -item['bandwidth']))
@@ -702,16 +951,16 @@ def print_streams(streams):
         return
 
     print(f"\n{bcolors.YELLOW}Available streams:{bcolors.ENDC}")
-    codec_width = max(28, max(len(stream.get('codecs') or 'unknown codecs') for stream in streams) + 2)
-    header = f"  {'#':>2}  {'Type':<4} {'Resolution':<10} {'Bitrate':<16} {'Codec':<{codec_width}} {'Lang':<5}"
-    divider = f"  {'-' * 2}  {'-' * 4} {'-' * 10} {'-' * 16} {'-' * codec_width} {'-' * 5}"
+    codec_width = max(28, max(len(stream.get('codecs') or '-') for stream in streams) + 2)
+    header = f"  {'#':>2}  {'Type':<4} {'Resolution':<10} {'Bitrate':<16} {'Codec':<{codec_width}} {'Lang':<5} {'Channels':<8}"
+    divider = f"  {'-' * 2}  {'-' * 4} {'-' * 10} {'-' * 16} {'-' * codec_width} {'-' * 5} {'-' * 8}"
     print(header)
     print(divider)
 
     for index, stream in enumerate(streams, start=1):
         kbps = round(stream.get('bandwidth', 0) / 1000)
-        bitrate = f"{kbps} Kbps" if kbps else 'unknown bitrate'
-        codecs = stream.get('codecs') or 'unknown codecs'
+        bitrate = f"{kbps} Kbps" if kbps else '-'
+        codecs = stream.get('codecs') or '-'
         stream_type = stream.get('type', 'stream')
         if stream_type == 'video':
             label = 'Vid'
@@ -726,19 +975,25 @@ def print_streams(streams):
             label = 'Stream'
             resolution = stream.get('resolution') or '-'
         language = stream.get('language') or '-'
-        print(f"  {index:>2}  {label:<4} {resolution:<10} {bitrate:<16} {codecs:<{codec_width}} {language:<5}")
+        channels = stream.get('channels') or '-'
+        print(f"  {index:>2}  {label:<4} {resolution:<10} {bitrate:<16} {codecs:<{codec_width}} {language:<5} {channels:<8}")
 
 
-def display_info(manifest_url, formatted_file_name, metadata, ultra=False):
+def display_info(manifest_url, formatted_file_name, metadata, ultra=False, quality=None):
+    formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
     manifest_label = 'MPD URL' if ultra else 'M3U8 URL'
     print(f"{bcolors.LIGHTBLUE}{manifest_label}: {bcolors.ENDC}{manifest_url}")
     try:
         response = session.get(manifest_url, timeout=30)
         response.raise_for_status()
         if ultra:
-            print_streams(get_dash_streams(response.content))
+            streams = get_dash_streams(response.content)
         else:
-            print_streams(get_hls_streams(response.text))
+            streams = get_hls_streams(response.text)
+        external_subtitle = bbc_external_subtitle_stream(metadata.get('bbc_caption_info'))
+        if external_subtitle:
+            streams.append(external_subtitle)
+        print_streams(streams)
     except (requests.RequestException, etree.XMLSyntaxError, ValueError) as exc:
         print(f"{bcolors.WARNING}{icons.ICON_WARNING} Could not inspect manifest streams: {exc}{bcolors.ENDC}")
 
@@ -765,6 +1020,7 @@ def extract_info(video_url, ultra=False):
 
     manifest_url = None
     max_resolution = None
+    caption_info = None
     for vpid in version_ids:
         media_selector_data = get_media_selector_data(vpid, ultra=ultra, show_error=False)
         if not media_selector_data:
@@ -774,12 +1030,15 @@ def extract_info(video_url, ultra=False):
         else:
             manifest_url, max_resolution = get_working_m3u8_url(media_selector_data)
         if manifest_url:
+            caption_info = get_caption_info_for_version(vpid, media_selector_data=media_selector_data)
             break
 
     if not manifest_url:
         quality_label = 'UHD DASH' if ultra else 'HLS'
         print(f"{bcolors.FAIL}No {quality_label} manifest was found for the available versions.{bcolors.ENDC}")
         return None, None, metadata
+
+    metadata['bbc_caption_info'] = caption_info
 
     title = metadata['episodes'][0]['title']
     subtitle = metadata['episodes'][0].get('subtitle', '')
@@ -804,28 +1063,37 @@ def build_download_command(m3u8_url, formatted_file_name, downloads_path, intera
     command = f'N_m3u8DL-RE "{m3u8_url}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-dir "{downloads_path}" --save-name "{formatted_file_name}" '
     return append_downloader_proxy(command)
 
-def display_download_command(m3u8_url, formatted_file_name, downloads_path, auto_download=False, ultra=False, interactive=False, quality=None):
-    quality = None if ultra else quality
+def display_download_command(m3u8_url, formatted_file_name, downloads_path, auto_download=False, ultra=False, interactive=False, quality=None, caption_info=None, save_sidecar_subs=False):
     formatted_file_name = apply_quality_to_filename(formatted_file_name, quality)
     download_command = build_download_command(m3u8_url, formatted_file_name, downloads_path, interactive=interactive, quality=quality)
     manifest_label = 'MPD URL' if ultra else 'M3U8 URL'
     print(f"{bcolors.LIGHTBLUE}{manifest_label}: {bcolors.ENDC}{m3u8_url}")
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}")
     print(mask_proxy_command(download_command))
+    if save_sidecar_subs:
+        suffix = subtitle_language_suffix(caption_info.get('language') if caption_info else None)
+        sidecar_path = Path(downloads_path) / f"{formatted_file_name}.{suffix}.srt"
+        print(f"{bcolors.LIGHTBLUE}EXTERNAL SUBTITLES: {bcolors.ENDC}{sidecar_path}")
+
+    def save_external_subtitles_if_requested():
+        if save_sidecar_subs:
+            save_bbc_sidecar_subtitles(caption_info, downloads_path, formatted_file_name)
 
     if auto_download:
+        save_external_subtitles_if_requested()
         print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
         subprocess.run(download_command, shell=True)
         return
 
     user_input = input("Do you wish to download? Y or N: ").strip().lower()
     if user_input == 'y':
+        save_external_subtitles_if_requested()
         print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
         subprocess.run(download_command, shell=True)
     else:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
-def process_video(video_url, downloads_path, auto_download=False, info=False, ultra=False, interactive=False, quality=None):
+def process_video(video_url, downloads_path, auto_download=False, info=False, ultra=False, interactive=False, quality=None, save_sidecar_subs=False):
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
     spinner = Spinner()
     spinner.start()
@@ -839,7 +1107,7 @@ def process_video(video_url, downloads_path, auto_download=False, info=False, ul
         return False
 
     if info:
-        display_info(manifest_url, formatted_file_name, metadata, ultra=ultra)
+        display_info(manifest_url, formatted_file_name, metadata, ultra=ultra, quality=quality)
         return True
 
     display_download_command(
@@ -850,30 +1118,31 @@ def process_video(video_url, downloads_path, auto_download=False, info=False, ul
         ultra=ultra,
         interactive=interactive,
         quality=quality,
+        caption_info=metadata.get('bbc_caption_info'),
+        save_sidecar_subs=save_sidecar_subs,
     )
     return True
 
-def download_selected_episodes(series_url, selector, downloads_path, ultra=False, quality=None):
+def download_selected_episodes(series_url, selector, downloads_path, ultra=False, quality=None, auto_confirm=False, save_sidecar_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != 'y':
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item['episode'])
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item['url'], downloads_path, auto_download=True, ultra=ultra, quality=quality)
+        process_video(item['url'], downloads_path, auto_download=True, ultra=ultra, quality=quality, save_sidecar_subs=save_sidecar_subs)
 
 def is_episode_url(url):
     return extract_video_id(url) is not None
 
-def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode="auto", export_list=False, download_selector=None, ultra=False, quality=None):
+def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode="auto", export_list=False, download_selector=None, ultra=False, quality=None, auto_confirm=False, save_sidecar_subs=False):
     """Eurovine entry point for BBC iPlayer; UHD requires a configured certificate."""
     if not video_url:
         raise ValueError("No BBC iPlayer URL provided.")
@@ -910,7 +1179,7 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
         try:
             if ultra:
                 get_bbc_certificate_path()
-            download_selected_episodes(video_url, download_selector, downloads_path, ultra=ultra, quality=None if ultra else quality)
+            download_selected_episodes(video_url, download_selector, downloads_path, ultra=ultra, quality=quality, auto_confirm=auto_confirm, save_sidecar_subs=save_sidecar_subs)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
@@ -922,7 +1191,7 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
         try:
             if ultra:
                 get_bbc_certificate_path()
-            process_video(video_url, downloads_path, info=True, ultra=ultra)
+            process_video(video_url, downloads_path, info=True, ultra=ultra, quality=quality)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
@@ -931,7 +1200,7 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
         try:
             if ultra:
                 get_bbc_certificate_path()
-            process_video(video_url, downloads_path, ultra=ultra, interactive=(mode == "interactive"), quality=None if ultra else quality)
+            process_video(video_url, downloads_path, auto_download=auto_confirm, ultra=ultra, interactive=(mode == "interactive"), quality=quality, save_sidecar_subs=save_sidecar_subs)
         except ValueError as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
@@ -939,5 +1208,3 @@ def main(video_url, downloads_path, wvd_device_path, certificate_path=None, mode
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
 
 # Example usage
-if __name__ == "__main__":
-    print("Run BBC iPlayer through eurovine.py so it can use the shared Eurovine configuration.")

@@ -15,6 +15,7 @@ from urllib.parse import urlparse, urlunparse
 from datetime import datetime
 from beaupy.spinners import Spinner
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
@@ -647,8 +648,12 @@ def fetch_brightcove_video(video_id):
 def build_save_name(show_name, series, episode, max_resolution):
     return f"{show_name}.S{int(series):02}E{int(episode):02}.{max_resolution}p.U.WEB-DL.AAC2.0.H.264"
 
-def build_download_command(manifest_url, source_type, save_name, keys=None, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+def build_download_command(manifest_url, source_type, save_name, keys=None, interactive=False, quality=None, save_subs=False):
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'N_m3u8DL-RE "{manifest_url}" '
         f"{selectors}"
@@ -658,7 +663,7 @@ def build_download_command(manifest_url, source_type, save_name, keys=None, inte
         command += "--key " + " --key ".join(keys)
     return append_downloader_proxy(command)
 
-def resolve_playback(video_url, interactive=False, quality=None):
+def resolve_playback(video_url, interactive=False, quality=None, save_subs=False):
     video_id, series, episode, show_name = get_video_id_and_info_from_url(video_url)
     response = fetch_brightcove_video(video_id)
     sources = response.get("sources") or []
@@ -711,7 +716,7 @@ def resolve_playback(video_url, interactive=False, quality=None):
         "keys": list(dict.fromkeys(keys)),
         "encrypted": encrypted,
         "save_name": save_name,
-        "download_command": build_download_command(manifest_url, manifest_type, save_name, keys, interactive=interactive, quality=quality),
+        "download_command": build_download_command(manifest_url, manifest_type, save_name, keys, interactive=interactive, quality=quality, save_subs=save_subs),
     }
 
 # Function to get PSSH from MPD URL
@@ -817,11 +822,11 @@ def info(video_url):
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{playback['save_name']}.mkv")
 
 # Function to process and print the download command
-def get_download_command(video_url, auto_download=False, interactive=False, quality=None):
+def get_download_command(video_url, auto_download=False, interactive=False, quality=None, save_subs=False):
     spinner = Spinner()
     spinner.start()
     try:
-        playback = resolve_playback(video_url, interactive=interactive, quality=quality)
+        playback = resolve_playback(video_url, interactive=interactive, quality=quality, save_subs=save_subs)
     except Exception:
         spinner.stop()
         raise
@@ -840,24 +845,23 @@ def get_download_command(video_url, auto_download=False, interactive=False, qual
     if user_input == 'y':
         subprocess.run(playback["download_command"], shell=True)
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != 'y':
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        get_download_command(item['url'], auto_download=True, quality=quality)
+        get_download_command(item['url'], auto_download=True, quality=quality, save_subs=save_subs)
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     if not video_url or not downloads_path or not wvd_device_path:
         raise ValueError("Eurovine config requires URL, downloads_path, and wvd_device_path for U.")
     configure_service(downloads_path, wvd_device_path)
@@ -884,19 +888,19 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             if is_episode_url(video_url):
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a U series URL, not an episode URL.{bcolors.ENDC}")
                 return
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
             return
 
         if is_episode_url(video_url):
             try:
-                get_download_command(video_url, interactive=(mode == "interactive"), quality=quality)
+                get_download_command(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
             except Exception as exc:
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
             return
 
         if is_standalone_show_url(video_url):
             try:
-                get_download_command(video_url, interactive=(mode == "interactive"))
+                get_download_command(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), save_subs=save_subs)
             except Exception as exc:
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
             return
@@ -905,6 +909,3 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
 
     except Exception as e:
         print(f"{bcolors.FAIL}Error: {e}{bcolors.ENDC}")
-
-if __name__ == "__main__":
-    print("Run U through eurovine.py so it can use the shared Eurovine configuration.")

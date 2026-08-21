@@ -17,6 +17,7 @@ from pywidevine.device import Device
 from pywidevine.pssh import PSSH
 from beaupy.spinners import Spinner
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import append_downloader_proxy, current_proxy_url, mask_proxy_command
@@ -515,6 +516,108 @@ def print_streams(streams):
     for row in rows:
         print("  ".join(f"{value[:widths[index]]:<{widths[index]}}" for index, value in enumerate(row)))
 
+def subtitle_url(subtitle):
+    if isinstance(subtitle, str):
+        return subtitle
+    if not isinstance(subtitle, dict):
+        return ""
+    for key in ("Href", "href", "Url", "url", "Uri", "uri"):
+        value = clean_text(subtitle.get(key))
+        if value:
+            return value
+    return ""
+
+def subtitle_language(subtitle):
+    if not isinstance(subtitle, dict):
+        return "en"
+    return clean_text(
+        subtitle.get("Language")
+        or subtitle.get("language")
+        or subtitle.get("Locale")
+        or subtitle.get("locale")
+        or "en"
+    )
+
+def subtitle_codec(subtitle):
+    text = json.dumps(subtitle, ensure_ascii=False).lower() if isinstance(subtitle, dict) else str(subtitle).lower()
+    if ".vtt" in text or "webvtt" in text:
+        return "vtt"
+    if ".ttml" in text or "ttml" in text:
+        return "ttml"
+    return "-"
+
+def external_subtitle_streams(subtitles):
+    rows = []
+    seen = set()
+    for subtitle in subtitles or []:
+        url = subtitle_url(subtitle)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        rows.append({
+            "type": "Sub",
+            "resolution": "-",
+            "bitrate": "-",
+            "codec": subtitle_codec(subtitle),
+            "lang": subtitle_language(subtitle) or "en",
+            "channels": "-",
+            "extra": "external",
+        })
+    return rows
+
+def strip_subtitle_tags(text):
+    text = re.sub(r"<[^>]+>", "", text)
+    return clean_text(html_lib.unescape(text))
+
+def vtt_time_to_srt(value):
+    value = value.strip()
+    if value.count(":") == 1:
+        value = "00:" + value
+    return value.replace(".", ",")
+
+def parse_vtt(vtt_text):
+    vtt_text = vtt_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    cues = []
+    for block in re.split(r"\n{2,}", vtt_text.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines or lines[0].upper().startswith("WEBVTT"):
+            continue
+        time_index = next((index for index, line in enumerate(lines) if "-->" in line), None)
+        if time_index is None:
+            continue
+        start, end = [part.strip().split()[0] for part in lines[time_index].split("-->", 1)]
+        text = strip_subtitle_tags(" ".join(lines[time_index + 1:]))
+        if text:
+            cues.append({"start": vtt_time_to_srt(start), "end": vtt_time_to_srt(end), "text": text})
+    return cues
+
+def write_srt(cues, output_path):
+    lines = []
+    for index, cue in enumerate(cues, start=1):
+        lines.extend([str(index), f"{cue['start']} --> {cue['end']}", cue["text"], ""])
+    Path(output_path).write_text("\n".join(lines), encoding="utf-8")
+
+def save_external_subtitles(client, subtitles, filename):
+    candidates = [subtitle for subtitle in subtitles or [] if subtitle_url(subtitle)]
+    if not candidates:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No external ITVX subtitle URL found.{bcolors.ENDC}")
+        return None
+
+    subtitle = candidates[0]
+    url = subtitle_url(subtitle)
+    response = client.get(url, headers={"Accept": "text/vtt,*/*"}, timeout=30)
+    response.raise_for_status()
+    cues = parse_vtt(response.text)
+    if not cues:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No ITVX subtitle cues found.{bcolors.ENDC}")
+        return None
+
+    lang = subtitle_language(subtitle) or "en"
+    output_path = Path(SAVE_PATH) / f"{filename}.{lang}.srt"
+    write_srt(cues, output_path)
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} External subtitles saved: {bcolors.ENDC}{output_path}")
+    return output_path
+
 def build_save_name(programme, episode, max_height):
     try:
         season = int(episode.get("series") or 1)
@@ -635,21 +738,20 @@ class ITV:
         warn_if_partial_range_match(parsed_selector, selected)
         return selected
 
-    def download_selected_episodes(self, series_url, selector, quality=None):
+    def download_selected_episodes(self, series_url, selector, quality=None, auto_confirm=False, save_subs=False):
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
         episode_items = self.select_episode_items(series_url, selector)
         print_download_queue(episode_items)
 
         episode_word = "episode" if len(episode_items) == 1 else "episodes"
         this_or_these = "this" if len(episode_items) == 1 else "these"
-        user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-        if user_input != "y":
+        if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
             print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
             return
 
         for index, item in enumerate(episode_items, start=1):
             print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {item.get('title') or item.get('url')}{bcolors.ENDC}")
-            self.download(item["url"], auto_download=True, quality=quality)
+            self.download(item["url"], auto_download=True, quality=quality, save_subs=save_subs)
 
     def get_pssh(self, mpd_url: str) -> str:
         r = self.client.get(mpd_url, timeout=30)
@@ -748,16 +850,20 @@ class ITV:
         manifest_url = best_file.get("Href")
         if not manifest_url:
             raise ValueError("ITVX playback information did not contain a manifest URL.")
-        return page_props, programme, episode, best_file, manifest_url
+        subtitles = video.get("Subtitles") or []
+        return page_props, programme, episode, best_file, manifest_url, subtitles
 
     def info(self, url):
         spinner = Spinner()
         spinner.start()
         try:
-            page_props, programme, episode, media_file, manifest_url = self.resolve_playback(url)
+            page_props, programme, episode, media_file, manifest_url, subtitles = self.resolve_playback(url)
             response = self.client.get(manifest_url, timeout=30)
             response.raise_for_status()
             streams, manifest_type = parse_manifest_streams(response.text)
+            for subtitle_stream in external_subtitle_streams(subtitles):
+                streams.append(subtitle_stream)
+            streams = sorted(streams, key=stream_sort_key)
             max_height = max(
                 (
                     int(match.group(1))
@@ -799,12 +905,12 @@ class ITV:
         return True
 
 
-    def download(self, url: str, auto_download=False, interactive=False, quality=None):
+    def download(self, url: str, auto_download=False, interactive=False, quality=None, save_subs=False):
         # Step 1: Fetch and parse `#__NEXT_DATA__` metadata
         spinner = Spinner()
         spinner.start()
         try:
-            page_props, programme, episode, best_file, mpd_url = self.resolve_playback(url)
+            page_props, programme, episode, best_file, mpd_url, subtitles = self.resolve_playback(url)
             lic_url = best_file['KeyServiceUrl']
 
             # Step 5: Generate PSSH and fetch the decryption key
@@ -840,10 +946,16 @@ class ITV:
             print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
 
         # Step 8: Construct and execute the download command
-        selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+        if interactive:
+            selectors = ""
+        else:
+            subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+            selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
         command = f'N_m3u8DL-RE "{mpd_url}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{save_name}" --save-dir "{SAVE_PATH}" --key {key}'
         command = append_downloader_proxy(command)
         print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy_command(command)}")
+        if save_subs:
+            save_external_subtitles(self.client, subtitles, save_name)
         if auto_download:
             print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
             subprocess.run(command, shell=True)
@@ -857,7 +969,7 @@ class ITV:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return False
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     """Eurovine entry point for ITVX (Widevine)."""
     if not video_url:
         raise ValueError("No ITVX URL provided.")
@@ -892,17 +1004,13 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an ITVX series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            itv.download_selected_episodes(video_url, download_selector, quality)
+            itv.download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
         except (LookupError, ValueError, ConnectionError) as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
-        itv.download(video_url, interactive=(mode == "interactive"), quality=quality)
+        itv.download(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
-
-
-if __name__ == "__main__":
-    print("Run ITVX through eurovine.py so it can use the shared Eurovine configuration.")

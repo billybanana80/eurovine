@@ -14,6 +14,7 @@ from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import icons
+from download_confirm import confirm_download
 import requests
 import urllib3
 from beaupy.spinners import Spinner
@@ -92,6 +93,7 @@ class PlaybackInfo:
     subtitles: list = field(default_factory=list)
     subtitle_type: Optional[str] = None
     streams: list = field(default_factory=list)
+    has_manifest_subtitles: bool = False
 
 
 def clean_text(value):
@@ -957,7 +959,44 @@ def save_translated_subtitles(playback, filename):
     return output_path
 
 
-def maybe_save_translated_subtitles(playback, filename):
+def subtitle_language_suffix(subtitle):
+    if isinstance(subtitle, dict):
+        value = clean_text(subtitle.get("language") or subtitle.get("lang") or subtitle.get("locale")).lower()
+        if value:
+            return value.split("-", 1)[0]
+    return "sv"
+
+
+def save_native_subtitles(playback, filename):
+    if playback.has_manifest_subtitles:
+        return None
+
+    subtitle = get_subtitle(playback)
+    if not subtitle:
+        detail = f" subtitleType={playback.subtitle_type}" if playback.subtitle_type else ""
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No external Swedish subtitle URL found in SVT playback response.{detail}{bcolors.ENDC}")
+        return None
+
+    url = subtitle_url(subtitle)
+    response = session.get(url, headers=DEFAULT_HEADERS, timeout=30)
+    response.raise_for_status()
+    cues = parse_vtt(response.text)
+    if not cues:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No subtitle cues found in SVT VTT response.{bcolors.ENDC}")
+        return None
+
+    suffix = subtitle_language_suffix(subtitle)
+    output_path = SAVE_PATH / f"{filename}.{suffix}.srt"
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Saving Swedish subtitles as SRT...{bcolors.ENDC}")
+    write_srt(cues, output_path)
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Native subtitles saved: {bcolors.ENDC}{output_path}")
+    return output_path
+
+
+def maybe_save_translated_subtitles(playback, filename, auto_download=False):
+    if auto_download:
+        return save_translated_subtitles(playback, filename)
+
     try:
         user_input = input("Do you wish to save translated English subtitles? Y or N: ").strip().lower()
     except EOFError:
@@ -1146,8 +1185,12 @@ def print_download_queue(episode_items):
         print(f"{bcolors.GRAY}{format_queue_selector(item)} {item.get('title') or ''}{bcolors.ENDC}".rstrip())
 
 
-def build_download_command(playback, filename, keys=None, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, keys=None, interactive=False, quality=None, include_subtitles=False):
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if include_subtitles else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1192,7 +1235,7 @@ def run_with_spinner(callback):
     return result
 
 
-def resolve_video(video_url, interactive=False, quality=None):
+def resolve_video(video_url, interactive=False, quality=None, include_subtitles=False):
     page_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, page_id)
     playback = get_playback_info(video_url, metadata)
@@ -1208,6 +1251,7 @@ def resolve_video(video_url, interactive=False, quality=None):
     manifest_text = fetch_manifest(playback.manifest_url)
     streams, detected_manifest_type = parse_manifest_streams(manifest_text)
     playback.manifest_type = "mpd" if detected_manifest_type == "DASH" else "m3u8"
+    playback.has_manifest_subtitles = any(stream.get("type") == "Sub" for stream in streams)
     existing_subtitle_keys = {
         (stream.get("codec"), stream.get("lang"))
         for stream in streams
@@ -1225,7 +1269,7 @@ def resolve_video(video_url, interactive=False, quality=None):
         resolution = get_resolution(playback)
     filename = format_filename(metadata, resolution)
     filename = apply_quality_to_filename(filename, quality)
-    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality)
+    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality, include_subtitles=include_subtitles)
     return playback, keys, resolution, filename, command
 
 
@@ -1293,9 +1337,9 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, auto_download=False, interactive=False, quality=None):
+def process_video(video_url, auto_download=False, interactive=False, quality=None, save_native_subs=False):
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
+    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality, include_subtitles=save_native_subs))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     if metadata.title != "Unknown" or episode_str or metadata.episode_title:
@@ -1304,27 +1348,26 @@ def process_video(video_url, auto_download=False, interactive=False, quality=Non
         print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}{metadata.title}{bcolors.ENDC}{detail}")
 
     print_playback_details(playback, keys, command)
-    if auto_download:
-        save_translated_subtitles(playback, filename)
-    else:
-        maybe_save_translated_subtitles(playback, filename)
+    if save_native_subs:
+        save_native_subtitles(playback, filename)
+    if get_subtitle(playback) or not save_native_subs:
+        maybe_save_translated_subtitles(playback, filename, auto_download=auto_download)
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_native_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_native_subs=save_native_subs)
 
 
 def export_episode_urls(episode_items):
@@ -1340,7 +1383,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_native_subs=False):
     """Eurovine entry point for SVT Play (DASH/HLS with ClearKey where required)."""
     try:
         if not video_url:
@@ -1361,7 +1404,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
 
         if mode == "download":
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_native_subs=save_native_subs)
             return
 
         if mode == "info":
@@ -1377,7 +1420,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
             return
 
-        process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+        process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_native_subs=save_native_subs)
     except (binascii.Error, ValueError, requests.RequestException, RuntimeError) as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
         raise

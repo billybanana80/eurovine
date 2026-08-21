@@ -20,6 +20,7 @@ from pywidevine.cdm import Cdm
 from pywidevine.device import Device
 from pywidevine.pssh import PSSH
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url, mask_proxy_command
@@ -1059,20 +1060,95 @@ def get_subtitle(playback):
     return subtitles[0]
 
 
-def save_english_subtitles(playback, filename):
-    subtitle = get_subtitle(playback)
-    if not subtitle:
-        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No NPO subtitle URL found in stream-link response.{bcolors.ENDC}")
-        return None
+def native_subtitle_preference_score(subtitle):
+    iso = clean_text(subtitle.get("iso")).lower()
+    name = clean_text(subtitle.get("name")).lower()
+    location = clean_text(subtitle.get("location")).lower()
+    score = 0
+    if iso == "nl" or "nederlands" in name or "/subtitles/nl/" in location:
+        score += 300
+    elif iso and not iso.startswith("en"):
+        score += 200
+    elif "english" in name or iso.startswith("en") or "/subtitles/en/" in location:
+        score += 50
+    if clean_text(subtitle.get("location")):
+        score += 10
+    return score
 
+
+def get_native_subtitle(playback):
+    subtitles = [subtitle for subtitle in playback.subtitles or [] if isinstance(subtitle, dict)]
+    subtitles = [subtitle for subtitle in subtitles if clean_text(subtitle.get("location"))]
+    if not subtitles:
+        return None
+    subtitles.sort(key=native_subtitle_preference_score, reverse=True)
+    return subtitles[0]
+
+
+def subtitle_language_suffix(subtitle, default="native"):
+    iso = clean_text(subtitle.get("iso")).lower().replace("_", "-")
+    if iso:
+        suffix = re.sub(r"[^a-z0-9-]", "", iso).split("-", 1)[0]
+        if suffix:
+            return suffix
+
+    name = clean_text(subtitle.get("name")).lower()
+    location_path = urlparse(clean_text(subtitle.get("location"))).path.lower()
+    if "nederlands" in name or "/nl/" in location_path or "/subtitles/nl/" in location_path:
+        return "nl"
+    if "english" in name or "/en/" in location_path or "/subtitles/en/" in location_path:
+        return "en"
+    return default
+
+
+def subtitle_language_label(subtitle):
+    suffix = subtitle_language_suffix(subtitle)
+    if suffix == "nl":
+        return "Dutch"
+    if suffix == "en":
+        return "English"
+    return "native"
+
+
+def fetch_subtitle_cues(subtitle):
     subtitle_url = clean_text(subtitle.get("location"))
-    subtitle_iso = clean_text(subtitle.get("iso")).lower()
     response = session.get(subtitle_url, headers=DEFAULT_HEADERS, timeout=30)
     response.raise_for_status()
     vtt_text = response.content.decode("utf-8", "replace")
     cues = parse_vtt(vtt_text)
     if not cues:
         print(f"{bcolors.WARNING}{icons.ICON_WARNING} No subtitle cues found in NPO VTT response.{bcolors.ENDC}")
+        return None
+    return cues
+
+
+def save_native_subtitles(playback, filename):
+    subtitle = get_native_subtitle(playback)
+    if not subtitle:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No NPO subtitle URL found in stream-link response.{bcolors.ENDC}")
+        return None
+
+    cues = fetch_subtitle_cues(subtitle)
+    if not cues:
+        return None
+
+    suffix = subtitle_language_suffix(subtitle)
+    output_path = SAVE_PATH / f"{filename}.{suffix}.srt"
+    print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Saving {subtitle_language_label(subtitle)} subtitles as SRT...{bcolors.ENDC}")
+    write_srt(cues, output_path)
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Native subtitles saved: {bcolors.ENDC}{output_path}")
+    return output_path
+
+
+def save_english_subtitles(playback, filename):
+    subtitle = get_subtitle(playback)
+    if not subtitle:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No NPO subtitle URL found in stream-link response.{bcolors.ENDC}")
+        return None
+
+    subtitle_iso = clean_text(subtitle.get("iso")).lower()
+    cues = fetch_subtitle_cues(subtitle)
+    if not cues:
         return None
 
     output_path = SAVE_PATH / f"{filename}.en.srt"
@@ -1087,7 +1163,10 @@ def save_english_subtitles(playback, filename):
     return output_path
 
 
-def maybe_save_english_subtitles(playback, filename):
+def maybe_save_english_subtitles(playback, filename, auto_download=False):
+    if auto_download:
+        return save_english_subtitles(playback, filename)
+
     try:
         user_input = input("Do you wish to save English subtitles? Y or N: ").strip().lower()
     except EOFError:
@@ -1443,7 +1522,7 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url: str, auto_download=False, interactive=False, quality=None):
+def process_video(video_url: str, auto_download=False, interactive=False, quality=None, save_native_subs=False):
     """Main processing function for NPO videos."""
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
 
@@ -1456,27 +1535,25 @@ def process_video(video_url: str, auto_download=False, interactive=False, qualit
         print(f"{icons.ICON_SUCCESS}{bcolors.OKGREEN} Episode Title:{bcolors.ENDC} {metadata.title} {episode_str}{episode_title}".strip())
 
     print_playback_details(playback, keys, command)
-    if auto_download:
-        save_english_subtitles(playback, filename)
-    else:
-        maybe_save_english_subtitles(playback, filename)
+    if save_native_subs:
+        save_native_subtitles(playback, filename)
+    maybe_save_english_subtitles(playback, filename, auto_download=auto_download)
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_native_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_native_subs=save_native_subs)
 
 
 def export_episode_urls(episode_items):
@@ -1492,7 +1569,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_native_subs=False):
     """Eurovine entry point for NPO (Widevine)."""
     try:
         if not video_url:
@@ -1519,7 +1596,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an NPO series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_native_subs=save_native_subs)
             return
 
         if mode == "info":
@@ -1538,10 +1615,6 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
             return
 
-        process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+        process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_native_subs=save_native_subs)
     except Exception as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
-
-
-if __name__ == "__main__":
-    print("Run NPO through eurovine.py so it can use the shared Eurovine configuration.")

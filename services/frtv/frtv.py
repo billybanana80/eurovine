@@ -14,6 +14,7 @@ from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import icons
+from download_confirm import confirm_download
 import requests
 import urllib3
 from beaupy.spinners import Spinner
@@ -1071,10 +1072,11 @@ def write_srt(cues, output_path):
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def delete_temp_subtitle_file(path):
+def delete_temp_subtitle_file(path, show_success=True):
     try:
         path.unlink()
-        print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Deleted temporary French subtitles: {bcolors.ENDC}{path}")
+        if show_success:
+            print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} Deleted temporary French subtitles: {bcolors.ENDC}{path}")
     except FileNotFoundError:
         pass
     except Exception as exc:
@@ -1128,7 +1130,7 @@ def get_subtitle_url(playback):
     return hls_subtitles[0].get("url")
 
 
-def save_translated_subtitles(playback, filename):
+def save_translated_subtitles(playback, filename, show_temp_delete=True):
     subtitle_url = get_subtitle_url(playback)
     if not subtitle_url:
         dash_subtitles = [subtitle for subtitle in playback.subtitles or [] if str(subtitle.get("kind", "")).startswith("dash")]
@@ -1153,7 +1155,7 @@ def save_translated_subtitles(playback, filename):
             print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Translating French subtitles to English SRT...{bcolors.ENDC}")
             write_srt(translate_cues(cues), output_path)
             print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} English subtitles saved: {bcolors.ENDC}{output_path}")
-            delete_temp_subtitle_file(subtitle_path)
+            delete_temp_subtitle_file(subtitle_path, show_success=show_temp_delete)
             return output_path
         else:
             print(f"{bcolors.WARNING}{icons.ICON_WARNING} No French subtitle URL found in France TV manifest.{bcolors.ENDC}")
@@ -1173,9 +1175,9 @@ def save_translated_subtitles(playback, filename):
     return output_path
 
 
-def maybe_save_translated_subtitles(playback, filename, auto_download=False):
+def maybe_save_translated_subtitles(playback, filename, auto_download=False, show_temp_delete=True):
     if auto_download:
-        return save_translated_subtitles(playback, filename)
+        return save_translated_subtitles(playback, filename, show_temp_delete=show_temp_delete)
 
     try:
         user_input = input("Do you wish to save translated English subtitles? Y or N: ").strip().lower()
@@ -1185,7 +1187,7 @@ def maybe_save_translated_subtitles(playback, filename, auto_download=False):
     if user_input != "y":
         return None
 
-    return save_translated_subtitles(playback, filename)
+    return save_translated_subtitles(playback, filename, show_temp_delete=show_temp_delete)
 
 
 def safe_name(value):
@@ -1210,8 +1212,12 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, keys=None, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, keys=None, interactive=False, quality=None, include_subtitles=False):
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if include_subtitles else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1238,7 +1244,7 @@ def highest_stream_resolution(streams, default="Unknown"):
     return f"{max(heights)}p" if heights else default
 
 
-def resolve_video(video_url, interactive=False, quality=None):
+def resolve_video(video_url, interactive=False, quality=None, include_subtitles=False):
     video_url = canonical_url(video_url)
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
@@ -1257,7 +1263,7 @@ def resolve_video(video_url, interactive=False, quality=None):
     resolution = highest_stream_resolution(playback.streams, get_resolution(playback))
     filename = format_filename(metadata, resolution)
     filename = apply_quality_to_filename(filename, quality)
-    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality)
+    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality, include_subtitles=include_subtitles)
     return playback, keys, resolution, filename, command
 
 
@@ -1537,10 +1543,10 @@ def maybe_download(command, auto_download=False):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, auto_download=False, interactive=False, quality=None):
+def process_video(video_url, auto_download=False, interactive=False, quality=None, save_native_subs=False):
     video_url = canonical_url(video_url)
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
+    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality, include_subtitles=save_native_subs))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     if metadata.title != "Unknown" or episode_str or metadata.episode_title:
@@ -1549,24 +1555,23 @@ def process_video(video_url, auto_download=False, interactive=False, quality=Non
     if playback.drm and playback.manifest_type != "mpd":
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}France TV reports DRM, but this script has no licence endpoint for this item yet.{bcolors.ENDC}")
     print_playback_details(playback, keys, command)
-    maybe_save_translated_subtitles(playback, filename, auto_download=auto_download)
+    maybe_save_translated_subtitles(playback, filename, auto_download=auto_download, show_temp_delete=not save_native_subs)
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_native_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_native_subs=save_native_subs)
 
 
 def export_episode_urls(episode_items):
@@ -1582,7 +1587,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_native_subs=False):
     """Eurovine entry point for France TV (Widevine where available)."""
     try:
         if not video_url:
@@ -1610,7 +1615,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a France TV series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_native_subs=save_native_subs)
             return
 
         if mode == "info":
@@ -1629,13 +1634,9 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             return
 
         if is_episode_url(video_url):
-            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+            process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_native_subs=save_native_subs)
             return
 
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
     except Exception as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
-
-
-if __name__ == "__main__":
-    print("Run France TV through eurovine.py so it can use the shared Eurovine configuration.")

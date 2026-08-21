@@ -13,6 +13,7 @@ from pywidevine.device import Device
 from pywidevine.cdm import Cdm
 from pywidevine.pssh import PSSH
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from pathlib import Path
 from quality_utils import apply_quality_to_filename, video_selector
@@ -105,13 +106,21 @@ def get_config():
 
 def get_episode_metadata(episode_url: str) -> dict:
     """
-    Resolve the RTE episode metadata from a series/episode URL.
+    Resolve the RTE programme metadata from a series/episode or movie URL.
     """
     # Example:
     # https://www.rte.ie/player/series/hidden-assets/SI0000012001?epguid=IP10012641-03-0001
     m = re.search(r"/series/[^/]+/(SI\d+)(?:\?epguid=([A-Z0-9\-]+))?", episode_url)
     if not m:
-        raise ValueError("Could not parse series GUID / epguid from URL")
+        movie_match = re.search(r"/movie/[^/]+/(\d+)", episode_url)
+        if movie_match:
+            movie_id = movie_match.group(1)
+            programs = rte_get(f"/mpx/1uC-gC/rte-prd-prd-all-programs?byId={movie_id}")
+            entries = programs.get("entries", [])
+            if not entries:
+                raise ValueError("No matching RTE movie/programme found for this URL")
+            return entries[0]
+        raise ValueError("Could not parse series GUID / epguid or movie ID from URL")
 
     series_guid = m.group(1)
     ep_guid = m.group(2)
@@ -151,7 +160,7 @@ def parse_series_url(series_url: str):
 
 
 def is_episode_url(url):
-    return "epguid=" in urlsplit(url).query
+    return "epguid=" in urlsplit(url).query or re.search(r"/movie/[^/]+/\d+", urlsplit(url).path) is not None
 
 
 def clean_text(value):
@@ -323,6 +332,30 @@ def parse_manifest_streams(manifest_content):
     if manifest_text.lstrip().startswith("#EXTM3U"):
         return parse_hls_streams(manifest_text), "HLS"
     return parse_dash_streams(manifest_content), "DASH"
+
+
+def has_subtitle_stream(streams):
+    return any(stream.get("type") == "Sub" for stream in streams or [])
+
+
+def external_subtitle_streams(subtitles):
+    rows = []
+    seen = set()
+    for subtitle in subtitles or []:
+        url = clean_text(subtitle.get("url") if isinstance(subtitle, dict) else subtitle)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        codec = "vtt" if ".vtt" in url.lower() else "-"
+        rows.append({
+            "type": "Sub",
+            "resolution": "-",
+            "bitrate": "-",
+            "codec": codec,
+            "lang": clean_text(subtitle.get("lang") if isinstance(subtitle, dict) else "") or "en",
+            "channels": "-",
+        })
+    return rows
 
 
 def print_streams(streams):
@@ -652,8 +685,15 @@ def get_manifest_and_pid(media_url: str, token: str):
 
     manifest_url = None
     tracking_value = None
+    subtitle_streams = []
 
     for elem in root.iter():
+        if tagname(elem) == "textstream" and elem.attrib.get("src"):
+            subtitle_streams.append({
+                "url": elem.attrib["src"],
+                "type": elem.attrib.get("type") or "text/vtt",
+                "lang": elem.attrib.get("lang") or "en",
+            })
         if tagname(elem) == "switch":
             # video child -> manifest src
             for child in list(elem):
@@ -664,7 +704,6 @@ def get_manifest_and_pid(media_url: str, token: str):
                     for p in child.iter():
                         if tagname(p) == "param" and p.attrib.get("name") == "trackingData":
                             tracking_value = p.attrib.get("value")
-            break
 
     if not manifest_url:
         # DEBUG: dump SMIL for inspection
@@ -681,7 +720,7 @@ def get_manifest_and_pid(media_url: str, token: str):
         raise ValueError("Could not extract releasePid from trackingData")
 
     pid = m.group(1)
-    return manifest_url, pid
+    return manifest_url, pid, subtitle_streams
 
 
 # ---- DASH / DRM helpers -------------------------------------------------
@@ -786,10 +825,72 @@ def build_video_name(episode, max_res):
     season_num = int(episode.get("plprogram$tvSeasonNumber") or 0)
     episode_num = int(episode.get("plprogram$tvSeasonEpisodeNumber") or 0)
     show_clean = re.sub(r"[^A-Za-z0-9]+", ".", show_name).strip(".")
+    if not season_num or not episode_num or episode.get("plprogram$programType") == "movie":
+        return f"{show_clean}.{max_res}.RTE.WEB-DL.AAC2.0.H.264"
     return f"{show_clean}.S{season_num:02d}E{episode_num:02d}.{max_res}.RTE.WEB-DL.AAC2.0.H.264"
 
 
-def resolve_playback(ep_url, interactive=False, quality=None):
+def subtitle_selector(save_subs=False):
+    return "--select-subtitle all" if save_subs else "--drop-subtitle all"
+
+
+def strip_subtitle_tags(text):
+    return clean_text(re.sub(r"<[^>]+>", "", text))
+
+
+def vtt_time_to_srt(value):
+    value = value.strip()
+    if value.count(":") == 1:
+        value = "00:" + value
+    return value.replace(".", ",")
+
+
+def parse_vtt(vtt_text):
+    vtt_text = vtt_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    cues = []
+    for block in re.split(r"\n{2,}", vtt_text.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines or lines[0].upper().startswith("WEBVTT"):
+            continue
+        time_index = next((index for index, line in enumerate(lines) if "-->" in line), None)
+        if time_index is None:
+            continue
+        start, end = [part.strip().split()[0] for part in lines[time_index].split("-->", 1)]
+        text = strip_subtitle_tags(" ".join(lines[time_index + 1:]))
+        if text:
+            cues.append({"start": vtt_time_to_srt(start), "end": vtt_time_to_srt(end), "text": text})
+    return cues
+
+
+def write_srt(cues, output_path):
+    lines = []
+    for index, cue in enumerate(cues, start=1):
+        lines.extend([str(index), f"{cue['start']} --> {cue['end']}", cue["text"], ""])
+    Path(output_path).write_text("\n".join(lines), encoding="utf-8")
+
+
+def save_external_subtitles(subtitles, video_name):
+    candidates = [subtitle for subtitle in subtitles or [] if clean_text(subtitle.get("url"))]
+    if not candidates:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No RTE subtitles found.{bcolors.ENDC}")
+        return None
+
+    subtitle = candidates[0]
+    response = session.get(subtitle["url"], headers={"Accept": "text/vtt,*/*"}, timeout=30)
+    response.raise_for_status()
+    cues = parse_vtt(response.text)
+    if not cues:
+        print(f"{bcolors.WARNING}{icons.ICON_WARNING} No RTE subtitle cues found.{bcolors.ENDC}")
+        return None
+
+    lang = clean_text(subtitle.get("lang")) or "en"
+    output_path = Path(CONFIG["save_path"]) / f"{video_name}.{lang}.srt"
+    write_srt(cues, output_path)
+    print(f"{bcolors.OKGREEN}{icons.ICON_SUCCESS} External subtitles saved: {bcolors.ENDC}{output_path}")
+    return output_path
+
+
+def resolve_playback(ep_url, interactive=False, quality=None, save_subs=False):
     episode = get_episode_metadata(ep_url)
     media_list = episode.get("plprogramavailability$media") or []
     if not media_list:
@@ -799,7 +900,7 @@ def resolve_playback(ep_url, interactive=False, quality=None):
         raise Exception("No plmedia$publicUrl in media entry")
 
     token, account = get_config()
-    mpd_url, pid = get_manifest_and_pid(media_url, token)
+    mpd_url, pid, subtitle_streams = get_manifest_and_pid(media_url, token)
     licence_url = (
         f'{CONFIG["endpoints"]["license"]}'
         f'?token={token}&account={account}&form=json&schema=1.0'
@@ -816,9 +917,10 @@ def resolve_playback(ep_url, interactive=False, quality=None):
     video_name = build_video_name(episode, max_res)
     video_name = apply_quality_to_filename(video_name, quality)
     key = keys[0]
+    selector = "" if interactive else f"{video_selector(quality)} --select-audio lang=en:for=best {subtitle_selector(save_subs)} "
     command = (
         f'N_m3u8DL-RE.exe "{mpd_url}" '
-        f'{"" if interactive else f"{video_selector(quality)} --select-audio lang=en:for=best --select-subtitle all "}'
+        f'{selector}'
         f'-mt -M format=mkv:muxer=mkvmerge '
         f'--thread-count 16 '
         f'--download-retry-count 10 '
@@ -830,6 +932,9 @@ def resolve_playback(ep_url, interactive=False, quality=None):
         command += f'--custom-proxy "{RTE_PROXY}" '
 
     streams, manifest_type = parse_manifest_streams(manifest_content)
+    manifest_has_subtitles = has_subtitle_stream(streams)
+    if not manifest_has_subtitles:
+        streams = sorted(streams + external_subtitle_streams(subtitle_streams), key=stream_sort_key)
     return {
         "episode": episode,
         "manifest_url": mpd_url,
@@ -841,6 +946,8 @@ def resolve_playback(ep_url, interactive=False, quality=None):
         "video_name": video_name,
         "command": command,
         "streams": streams,
+        "manifest_has_subtitles": manifest_has_subtitles,
+        "subtitle_streams": subtitle_streams,
     }
 
 
@@ -868,12 +975,12 @@ def info(ep_url):
 
 
 # ---- Main ---------------------------------------------------------------
-def process_video(ep_url, auto_download=False, interactive=False, quality=None):
+def process_video(ep_url, auto_download=False, interactive=False, quality=None, save_subs=False):
     try:
         spinner = Spinner()
         spinner.start()
         try:
-            resolved = resolve_playback(ep_url, interactive=interactive, quality=quality)
+            resolved = resolve_playback(ep_url, interactive=interactive, quality=quality, save_subs=save_subs)
         except Exception:
             spinner.stop()
             raise
@@ -888,6 +995,9 @@ def process_video(ep_url, auto_download=False, interactive=False, quality=None):
             print(f"{bcolors.GREEN}KEYS: {bcolors.ENDC}--key {key}")
 
         print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy(resolved['command'])}")
+
+        if save_subs and not resolved.get("manifest_has_subtitles"):
+            save_external_subtitles(resolved.get("subtitle_streams"), resolved["video_name"])
 
         if auto_download:
             print(f"{icons.ICON_WAITING} {bcolors.OKBLUE}Downloading video...{bcolors.ENDC}")
@@ -919,7 +1029,7 @@ def process_video(ep_url, auto_download=False, interactive=False, quality=None):
         token, account = get_config()
 
         # 4) Manifest + pid
-        mpd_url, pid = get_manifest_and_pid(media_url, token)
+        mpd_url, pid, _subtitle_streams = get_manifest_and_pid(media_url, token)
         print(f"{bcolors.LIGHTBLUE}MPD URL: {bcolors.ENDC}{mpd_url}")
         # print(f"{bcolors.RED}releasePid: {bcolors.ENDC}{pid}")
 
@@ -985,91 +1095,24 @@ def process_video(ep_url, auto_download=False, interactive=False, quality=None):
         return False
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item)
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_subs=save_subs)
 
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Resolve RTE episode or series URLs.",
-        usage="rte.py [url] [-i | -l | -d SELECTOR]",
-    )
-    parser.add_argument("url", nargs="?", help="RTE episode or series URL")
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("-i", "--info", action="store_true", help="Show episode metadata and available streams without downloading")
-    mode_group.add_argument("-l", "--list", action="store_true", help="List episodes found on a series URL")
-    mode_group.add_argument(
-        "-d",
-        "--download",
-        metavar="SELECTOR",
-        help="Download from a series URL using sXXeXX, sXXXXeXX, sXX, sXXXX, or a range",
-    )
-    return parser.parse_args(argv)
-
-
-def main():
-    args = parse_args()
-
-    if args.url:
-        video_url = args.url.strip()
-        print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}RTE URL: {bcolors.ENDC}{video_url}")
-    else:
-        prompt_input = input(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Enter the RTE URL: {bcolors.ENDC}").strip()
-        args = parse_args(shlex.split(prompt_input))
-        if not args.url:
-            print(f"{icons.ICON_FAILURE} {bcolors.FAIL}No RTE URL provided.{bcolors.ENDC}")
-            return
-        video_url = args.url.strip()
-
-    if args.list:
-        try:
-            if is_episode_url(video_url):
-                list_episode_items([collect_episode_item(video_url)])
-            else:
-                list_episode_items(collect_episode_items(video_url, show_progress=False))
-        except Exception as exc:
-            print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
-        return
-
-    if args.info:
-        try:
-            info(video_url)
-        except Exception as exc:
-            print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
-        return
-
-    if args.download:
-        if is_episode_url(video_url):
-            print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires an RTE series URL, not an episode URL.{bcolors.ENDC}")
-            return
-        try:
-            download_selected_episodes(video_url, args.download)
-        except ValueError as exc:
-            print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
-        return
-
-    if is_episode_url(video_url):
-        process_video(video_url)
-        return
-
-    print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
-
-
-def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     configure_service(downloads_path, wvd_device_path)
     if mode == "list":
         items = [collect_episode_item(video_url)] if is_episode_url(video_url) else collect_episode_items(video_url, show_progress=False)
@@ -1079,11 +1122,8 @@ def eurovine_main(video_url, downloads_path, wvd_device_path, mode="auto", expor
             print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {out}{bcolors.ENDC}")
         return
     if mode == "info": return info(video_url)
-    if mode == "download": return download_selected_episodes(video_url, download_selector, quality)
-    if is_episode_url(video_url): return process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+    if mode == "download": return download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
+    if is_episode_url(video_url): return process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
     raise ValueError("Series URLs require --list/-l or --download/-d.")
 
 main = eurovine_main
-
-if __name__ == "__main__":
-    print("Run RTE through eurovine.py so it can use the shared Eurovine configuration.")

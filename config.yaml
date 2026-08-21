@@ -2,6 +2,9 @@ downloads_path: D:/Downloads/ # your path to Downloads folder
 wvd_device_path: D:/Downloads/Eurovine/wvd/device.wvd # your path to *.wvd file
 prd_device_path: D:/Downloads/Eurovine/prd/device.prd # your path to *.prd file
 cookies_path: D:/Downloads/Eurovine/cookies/cookies.txt # your path to cookies file
+update_checks: true
+download:
+  auto_confirm: false
 credentials:
   npo: username:password
   tf1: username:password
@@ -13,47 +16,59 @@ proxy:
   - nordvpn
   services:
     all4: false
+    ard: true
     bbc: false
     drtv: true
     frtv: true
     itvx: false
     m6: true
+    mse: true
+    msi: true
     my5: false
     npo: true
     nrk: true
+    rai: true
     rte: true
+    rtve: true
     ruv: true
     stv: false
-    svt: false
+    svt: true
     tf1: true
     tv4: true
     u: true
     vm: true
+    zdf: true
 proxy_providers:
   surfsharkvpn:
     username: your_proxy_username
     password: your_proxy_password
     server_map:
-      IE: https://username:password@ie-dub.prod.surfshark.com:443
-      UK: https://username:password@uk-lon.prod.surfshark.com:443
+      DE: https://username:password@de-ber.prod.surfshark.com:443
       DK: https://username:password@dk-cph.prod.surfshark.com:443
-      NL: https://username:password@nl-ams.prod.surfshark.com:443
+      ES: https://username:password@es-mad.prod.surfshark.com:443
       FR: https://username:password@fr-par.prod.surfshark.com:443
-      SE: https://username:password@se-sto.prod.surfshark.com:443
-      "NO": https://username:password@no-osl.prod.surfshark.com:443
+      IE: https://username:password@ie-dub.prod.surfshark.com:443
       IS: https://username:password@is-rkv.prod.surfshark.com:443
+      IT: https://username:password@it-mil.prod.surfshark.com:443
+      NL: https://username:password@nl-ams.prod.surfshark.com:443
+      'NO': https://username:password@no-osl.prod.surfshark.com:443
+      SE: https://username:password@se-sto.prod.surfshark.com:443
+      UK: https://username:password@uk-lon.prod.surfshark.com:443
   nordvpn:
     username: your_proxy_username
     password: your_proxy_password
     server_map:
-      IE: https://username:password@ie248.proxy.nordvpn.com:89
-      UK: https://username:password@uk2076.proxy.nordvpn.com:89
+      DE: https://username:password@de1481.proxy.nordvpn.com:89
       DK: https://username:password@dk244.proxy.nordvpn.com:89
-      NL: https://username:password@nl993.proxy.nordvpn.com:89
+      ES: https://username:password@es286.proxy.nordvpn.com:89
       FR: https://username:password@fr1200.proxy.nordvpn.com:89
-      SE: https://username:password@se682.proxy.nordvpn.com:89
-      "NO": https://username:password@no269.proxy.nordvpn.com:89
+      IE: https://username:password@ie248.proxy.nordvpn.com:89
       IS: https://username:password@is96.proxy.nordvpn.com:89
+      IT: https://username:password@it444.proxy.nordvpn.com:89
+      NL: https://username:password@nl993.proxy.nordvpn.com:89
+      'NO': https://username:password@no269.proxy.nordvpn.com:89
+      SE: https://username:password@se682.proxy.nordvpn.com:89
+      UK: https://username:password@uk2076.proxy.nordvpn.com:89
 vmplayer_device_id: # this will populate automatically
 bbc:
   certificate: D:/Downloads/Eurovine/certificates/iplayer.pem # your path to certificate file

@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 import requests
 import icons
+from download_confirm import confirm_download
 import urllib3
 import yaml
 from beaupy.spinners import Spinner
@@ -1338,8 +1339,12 @@ def format_filename(metadata, resolution):
     parts.extend([resolution, "TF1", "WEB-DL", "AAC2.0", "H.264"])
     return ".".join(part for part in parts if part and part != "Unknown")
 
-def build_download_command(playback, filename, keys=None, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, keys=None, interactive=False, quality=None, include_subtitles=False):
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if include_subtitles else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -1354,7 +1359,7 @@ def build_download_command(playback, filename, keys=None, interactive=False, qua
 
     return command
 
-def resolve_video(video_url, interactive=False, quality=None):
+def resolve_video(video_url, interactive=False, quality=None, include_subtitles=False):
     video_url = canonical_url(video_url)
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
@@ -1375,7 +1380,7 @@ def resolve_video(video_url, interactive=False, quality=None):
     resolution = highest_stream_resolution(playback.streams, get_resolution(playback))
     filename = format_filename(metadata, resolution)
     filename = apply_quality_to_filename(filename, quality)
-    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality)
+    command = build_download_command(playback, filename, keys, interactive=interactive, quality=quality, include_subtitles=include_subtitles)
     return playback, keys, resolution, filename, command
 
 def run_with_spinner(callback, quiet=False):
@@ -1637,30 +1642,29 @@ def maybe_download(command, auto_download=False):
     else:
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
 
-def process_video(video_url, auto_download=False, interactive=False, quality=None):
+def process_video(video_url, auto_download=False, interactive=False, quality=None, save_native_subs=False):
     video_url = canonical_url(video_url)
     print(f"{icons.ICON_INFO} {bcolors.LIGHTBLUE}Processing: {bcolors.ENDC}{video_url}")
-    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
+    playback, keys, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality, include_subtitles=save_native_subs))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     print_playback_details(playback, keys, command)
     maybe_save_translated_subtitles(playback, filename, auto_download=auto_download)
     maybe_download(command, auto_download=auto_download)
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_native_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_native_subs=save_native_subs)
 
 def export_episode_urls(episode_items):
     if not episode_items:
@@ -1674,7 +1678,7 @@ def export_episode_urls(episode_items):
     output_path.write_text("\n".join(item["url"] for item in episode_items) + "\n", encoding="utf-8")
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
-def main(video_url, downloads_path, wvd_device_path, tf1_credentials=None, tf1_config=None, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, tf1_credentials=None, tf1_config=None, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_native_subs=False):
     """Eurovine entry point for TF1 (Widevine)."""
     try:
         if not video_url:
@@ -1702,7 +1706,7 @@ def main(video_url, downloads_path, wvd_device_path, tf1_credentials=None, tf1_c
                 print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a TF1 series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_native_subs=save_native_subs)
             return
 
         if mode == "info":
@@ -1721,13 +1725,9 @@ def main(video_url, downloads_path, wvd_device_path, tf1_credentials=None, tf1_c
             return
 
         if is_episode_url(video_url):
-            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+            process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_native_subs=save_native_subs)
             return
 
         print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
     except Exception as exc:
         print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Error: {exc}{bcolors.ENDC}")
-
-if __name__ == "__main__":
-    print("Run TF1 through eurovine.py so it can use the shared Eurovine configuration.")
-

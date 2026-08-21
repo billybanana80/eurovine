@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 import urllib3
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from quality_utils import apply_quality_to_filename, video_selector
 from services.proxy import current_proxy_url, mask_proxy, mask_proxy_command
@@ -872,8 +873,12 @@ def format_filename(metadata, resolution):
     return ".".join(part for part in parts if part and part != "Unknown")
 
 
-def build_download_command(playback, filename, interactive=False, quality=None):
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --drop-subtitle all "
+def build_download_command(playback, filename, interactive=False, quality=None, include_subtitles=False):
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if include_subtitles else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = (
         f'{N_M3U8DL} "{playback.manifest_url}" '
         f'{selectors}'
@@ -886,7 +891,7 @@ def build_download_command(playback, filename, interactive=False, quality=None):
     return command
 
 
-def resolve_video(video_url, interactive=False, quality=None):
+def resolve_video(video_url, interactive=False, quality=None, include_subtitles=False):
     video_url = canonical_url(video_url)
     video_id = extract_video_id(video_url)
     metadata = search_metadata(video_url, video_id)
@@ -894,7 +899,7 @@ def resolve_video(video_url, interactive=False, quality=None):
     resolution = highest_stream_resolution(playback.streams, get_hls_resolution(playback.manifest_url))
     filename = format_filename(metadata, resolution)
     filename = apply_quality_to_filename(filename, quality)
-    command = build_download_command(playback, filename, interactive=interactive, quality=quality)
+    command = build_download_command(playback, filename, interactive=interactive, quality=quality, include_subtitles=include_subtitles)
     return playback, resolution, filename, command
 
 
@@ -1205,9 +1210,9 @@ def maybe_download(command, auto_download=False):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download cancelled{bcolors.ENDC}")
 
 
-def process_video(video_url, auto_download=False, interactive=False, quality=None):
+def process_video(video_url, auto_download=False, interactive=False, quality=None, save_native_subs=False):
     print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Processing: {bcolors.ENDC}{video_url}")
-    playback, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality))
+    playback, resolution, filename, command = run_with_spinner(lambda: resolve_video(video_url, interactive=interactive, quality=quality, include_subtitles=save_native_subs))
     metadata = playback.metadata
     episode_str = f"S{metadata.season:02d}E{metadata.episode:02d}" if metadata.season and metadata.episode else ""
     print(f"{bcolors.OKGREEN}{metadata.title}{bcolors.ENDC} {episode_str} - {metadata.episode_title or ''}".rstrip())
@@ -1219,20 +1224,19 @@ def process_video(video_url, auto_download=False, interactive=False, quality=Non
     maybe_download(command, auto_download=auto_download)
 
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_native_subs=False):
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != "y":
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{bcolors.RED}{icons.ICON_FAILURE} Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, 1):
         print()
         print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Downloading {index}/{len(episode_items)}: {bcolors.ENDC}{item['url']}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_native_subs=save_native_subs)
 
 
 def safe_filename(value):
@@ -1252,7 +1256,7 @@ def export_episode_urls(episode_items):
     print(f"{icons.ICON_SUCCESS} {bcolors.OKGREEN}Exported list: {output_path}{bcolors.ENDC}")
 
 
-def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_native_subs=False):
     """Eurovine entry point for DRTV DRM-free HLS."""
     try:
         if not video_url:
@@ -1280,7 +1284,7 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
                 print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Download selector mode requires a DRTV series URL, not an episode URL.{bcolors.ENDC}")
                 return
             print(f"{bcolors.LIGHTBLUE}{icons.ICON_WAITING} Retrieving series information.....{bcolors.ENDC}")
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_native_subs=save_native_subs)
             return
 
         if mode == "info":
@@ -1299,17 +1303,13 @@ def main(video_url, downloads_path, wvd_device_path, mode="auto", export_list=Fa
             return
 
         if is_episode_url(video_url):
-            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+            process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_native_subs=save_native_subs)
             return
 
         if is_series_url(video_url):
             print(f"{bcolors.WARNING}{icons.ICON_WARNING} Series URLs require a flag. Use --list/-l to list episodes, --export/-x to export episode URLs, or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
             return
 
-        process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+        process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality)
     except Exception as exc:
         print(f"{bcolors.FAIL}{icons.ICON_FAILURE} Error: {exc}{bcolors.ENDC}")
-
-
-if __name__ == "__main__":
-    print("Run DRTV through eurovine.py so it can use the shared Eurovine configuration.")

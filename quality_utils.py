@@ -44,7 +44,9 @@ def apply_quality_to_filename(filename, quality=None):
         "My5",
         "NPO",
         "NRK",
+        "RaiPlay",
         "RTE",
+        "RTVE",
         "RUV",
         "STV",
         "SVT",
@@ -52,6 +54,7 @@ def apply_quality_to_filename(filename, quality=None):
         "TV4",
         "U",
         "VirginMedia",
+        "ZDF",
     )
     for service_tag in service_tags:
         marker = f".{service_tag}."

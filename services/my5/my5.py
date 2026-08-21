@@ -19,6 +19,7 @@ from OpenSSL import SSL
 import xml.etree.ElementTree as ET  
 from beaupy.spinners import Spinner
 import icons
+from download_confirm import confirm_download
 from colors import bcolors
 from pathlib import Path
 from quality_utils import apply_quality_to_filename, video_selector
@@ -780,9 +781,13 @@ def get_decryption_key(pssh: str, lic_url: str, print_keys=True):
         if session_id is not None:
             cdm.close(session_id)
 
-def get_streams(mpd, keys, show_title, full_title, auto_download=False, interactive=False, quality=None):
+def get_streams(mpd, keys, show_title, full_title, auto_download=False, interactive=False, quality=None, save_subs=False):
     keys_str = ' '.join([f'--key {key}' for key in keys])
-    selectors = "" if interactive else f"{video_selector(quality)} --select-audio best --select-subtitle all "
+    if interactive:
+        selectors = ""
+    else:
+        subtitle_selector = "--select-subtitle all" if save_subs else "--drop-subtitle all"
+        selectors = f"{video_selector(quality)} --select-audio best {subtitle_selector} "
     command = f'N_m3u8DL-RE "{mpd}" {selectors}-mt -M format=mkv:muxer=mkvmerge --save-name "{full_title}" --save-dir "{DOWNLOAD_DIR}" {keys_str}'
     command = append_downloader_proxy(command)
     print(f"{bcolors.YELLOW}DOWNLOAD COMMAND: {bcolors.ENDC}{mask_proxy_command(command)}")
@@ -898,7 +903,7 @@ def info(url):
     print_episode_metadata(playback["episode"])
     print(f"\n{bcolors.YELLOW}Suggested filename: {bcolors.ENDC}{save_name}.mkv")
 
-def process_video(url, auto_download=False, interactive=False, quality=None):
+def process_video(url, auto_download=False, interactive=False, quality=None, save_subs=False):
     spinner = Spinner()
     spinner.start()
     try:
@@ -911,26 +916,25 @@ def process_video(url, auto_download=False, interactive=False, quality=None):
     print_playback_details(playback)
     playback["save_name"] = apply_quality_to_filename(playback["save_name"], quality)
     # Get the download streams
-    get_streams(playback["manifest_url"], playback["keys"], "", playback["save_name"], auto_download=auto_download, interactive=interactive, quality=quality)
+    get_streams(playback["manifest_url"], playback["keys"], "", playback["save_name"], auto_download=auto_download, interactive=interactive, quality=quality, save_subs=save_subs)
 
-def download_selected_episodes(series_url, selector, quality=None):
+def download_selected_episodes(series_url, selector, quality=None, auto_confirm=False, save_subs=False):
     print(f"{icons.ICON_WAITING} {bcolors.LIGHTBLUE}Retrieving series information.....{bcolors.ENDC}")
     episode_items = select_episode_items(series_url, selector)
     print_download_queue(episode_items)
 
     episode_word = "episode" if len(episode_items) == 1 else "episodes"
     this_or_these = "this" if len(episode_items) == 1 else "these"
-    user_input = input(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ").strip().lower()
-    if user_input != 'y':
+    if not confirm_download(f"Do you wish to download {this_or_these} {len(episode_items)} {episode_word}? Y or N: ", auto_confirm=auto_confirm):
         print(f"{icons.ICON_FAILURE} {bcolors.RED}Download cancelled{bcolors.ENDC}")
         return
 
     for index, item in enumerate(episode_items, start=1):
         _, title = episode_tree_label(item["episode"])
         print(f"\n{icons.ICON_INFO} {bcolors.LIGHTBLUE}Downloading {index}/{len(episode_items)}: {title}{bcolors.ENDC}")
-        process_video(item["url"], auto_download=True, quality=quality)
+        process_video(item["url"], auto_download=True, quality=quality, save_subs=save_subs)
 
-def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="auto", export_list=False, download_selector=None, quality=None):
+def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="auto", export_list=False, download_selector=None, quality=None, auto_confirm=False, save_subs=False):
     """Eurovine entry point for My5 (Widevine)."""
     if not video_url:
         raise ValueError("No My5 URL provided.")
@@ -969,20 +973,16 @@ def main(video_url, downloads_path, wvd_device_path, certificate=None, mode="aut
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}Download selector mode requires a My5 series URL, not an episode URL.{bcolors.ENDC}")
             return
         try:
-            download_selected_episodes(video_url, download_selector, quality)
+            download_selected_episodes(video_url, download_selector, quality, auto_confirm, save_subs=save_subs)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     if is_episode_url(video_url):
         try:
-            process_video(video_url, interactive=(mode == "interactive"), quality=quality)
+            process_video(video_url, auto_download=auto_confirm, interactive=(mode == "interactive"), quality=quality, save_subs=save_subs)
         except Exception as exc:
             print(f"{icons.ICON_FAILURE} {bcolors.FAIL}{exc}{bcolors.ENDC}")
         return
 
     print(f"{icons.ICON_WARNING} {bcolors.WARNING}Series URLs require a flag. Use --list/-l to list episodes or --download/-d SELECTOR to download selected episodes.{bcolors.ENDC}")
-
-if __name__ == "__main__":
-    print("Run My5 through eurovine.py so it can use the shared Eurovine configuration.")
-  
